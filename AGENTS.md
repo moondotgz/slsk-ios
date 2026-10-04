@@ -18,7 +18,8 @@ build environment:
 
 - **Tests** run on Linux (`swift test` in a Swift 6 container) — see the
   `linux-tests` job in `.github/workflows/build.yml`.
-- **The IPA** is built on `macos-15` runners: XcodeGen generates
+- **The IPA** on the `liquidglass` branch is built on `xcode-27` runners
+  (macOS 27, GitHub public preview) with Xcode 27. XcodeGen generates
   `Slsk.xcodeproj` from `project.yml`, `xcodebuild archive` builds it unsigned,
   and the `.app` is zipped into a `Payload/` → unsigned `.ipa` artifact.
   Users sideload it (Sideloadly/AltStore/TrollStore re-sign it).
@@ -82,8 +83,9 @@ Key messages / flows (details in `docs/reference/nicotine-plus/slskmessages.py`)
 - **Search**: client → server FileSearch(26: token, query). Requests arrive as
   FileSearch (username, token, query — username FIRST) or DistribSearch
   (u32 identifier==49, username, token, query). Responses are **zlib-compressed**
-  FileSearchResponse (peer code 9) sent on the connection the request came in
-  on ('P' for server searches, the 'D' connection for distributed).
+  FileSearchResponse (peer code 9) sent directly to the searching username
+  on a 'P' connection, including when the request arrived via 'D'. Never
+  return peer-framed results over a distributed connection.
 - **Downloads**: QueueUpload(43) on a 'P' conn → uploader sends
   TransferRequest(40, direction=1, token, file, size) → downloader answers
   TransferResponse(41, allowed) → uploader opens 'F' conn (direct, falling
@@ -134,6 +136,12 @@ sends u32 + 0xFFFFFFFF garbage" bug workaround in `FileListCodec`.
    Bump them whenever UI-visible state changes.
 
 ## How to build / test
+
+The Liquid Glass UI requires Xcode 26 or newer to compile. Native glass is
+enabled on iOS 26 and newer, with material/opaque fallbacks on older iOS
+versions and when accessibility settings reduce transparency or increase
+contrast. The deployment target remains iOS 16. Keep glass on controls,
+not file-list rows or message content.
 
 ```bash
 # Tests (Linux or macOS with Swift installed)

@@ -29,6 +29,136 @@ private final class TransferGateway: PeerGateway {
 }
 
 final class TransferRegressionTests: XCTestCase {
+    func testInitialDownloadRequestTimesOutAndCanBeRetried() throws {
+        let manager = TransferManager()
+        let gateway = TransferGateway()
+        manager.gateway = gateway
+        manager.activationTimeout = 0.01
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 10)))
+        let timeout = expectation(description: "initial request timed out")
+        manager.onChanged = { if item.status == .failed("Connection timeout") { timeout.fulfill() } }
+        wait(for: [timeout], timeout: 2)
+        XCTAssertEqual(item.status, .failed("Connection timeout"))
+        manager.onChanged = nil
+        manager.activationTimeout = 45
+        manager.retryDownload(item)
+        XCTAssertEqual(item.status, .queued)
+        XCTAssertEqual(gateway.messages.count, 4)
+        manager.serverWentOffline()
+    }
+
+    func testConfirmedRemoteQueueSurvivesInitialTimeoutButStaleRepliesDoNotChangeTransfer() throws {
+        let manager = TransferManager()
+        manager.gateway = TransferGateway()
+        manager.activationTimeout = 0.01
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 10)))
+        manager.handlePlaceInQueueResponse(file: "song", place: 3, from: "peer")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+        XCTAssertEqual(item.status, .remotelyQueued)
+        manager.activationTimeout = 45
+        _ = manager.handleTransferRequest(direction: TransferDirection.upload, token: 1, file: "song", fileSize: 10, from: "peer")
+        manager.handlePlaceInQueueResponse(file: "song", place: 99, from: "peer")
+        XCTAssertEqual(item.status, .connecting)
+        XCTAssertEqual(item.queuePosition, 0)
+        manager.cancelDownload(item)
+        manager.handlePlaceInQueueResponse(file: "song", place: 99, from: "peer")
+        XCTAssertEqual(item.status, .cancelled)
+    }
+
+    func testQueueMaintenanceIncludesUnconfirmedRequestsAndDetectsUnresponsiveQueues() throws {
+        let manager = TransferManager()
+        let gateway = TransferGateway()
+        manager.gateway = gateway
+        manager.activationTimeout = 0.01
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 10)))
+        manager.queueMaintenanceTick()
+        XCTAssertEqual(gateway.messages.count, 3)
+        manager.handlePlaceInQueueResponse(file: "song", place: 1, from: "peer")
+        manager.queueMaintenanceTick()
+        let timeout = expectation(description: "queue heartbeat timed out")
+        manager.onChanged = { if item.status == .failed("Connection timeout") { timeout.fulfill() } }
+        wait(for: [timeout], timeout: 2)
+    }
+
+    func testPeerFailureFailsOnlyPendingDownloadsAndAllowsLateOffer() throws {
+        let manager = TransferManager()
+        manager.downloadDirectory = try temporaryDirectory()
+        let pending = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "pending", size: 10)))
+        let running = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "running", size: 10)))
+        _ = manager.handleTransferRequest(direction: TransferDirection.upload, token: 1, file: "running", fileSize: 10, from: "peer")
+        manager.handleDownloadConnectionOpened(connectionID: 1, username: "peer", token: 1)
+        manager.handlePeerConnectionFailed("peer")
+        XCTAssertEqual(pending.status, .failed("Peer connection failed"))
+        XCTAssertEqual(running.status, .transferring)
+        let reply = manager.handleTransferRequest(direction: TransferDirection.upload, token: 2, file: "pending", fileSize: 10, from: "peer")
+        XCTAssertEqual(reply, PeerOut.transferResponse(token: 2, allowed: true))
+        manager.serverWentOffline()
+    }
+
+    func testInterruptedDownloadsPersistWithResumeIdentity() throws {
+        let storage = Storage(baseURL: try temporaryDirectory())
+        let manager = TransferManager()
+        manager.configure(storage: storage, gateway: nil, shares: nil)
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 10)))
+        item.status = .transferring
+        item.currentOffset = 4
+        manager.persist()
+        let restored = TransferManager()
+        restored.configure(storage: storage, gateway: nil, shares: nil)
+        let saved = try XCTUnwrap(restored.downloads.first)
+        XCTAssertEqual(saved.id, item.id)
+        XCTAssertEqual(saved.currentOffset, 4)
+        XCTAssertEqual(saved.status, .paused)
+        manager.serverWentOffline()
+        restored.serverWentOffline()
+    }
+
+    func testLegacyRequestForMissingFileIsDeniedInsteadOfQueued() {
+        let manager = TransferManager()
+        XCTAssertEqual(manager.handleLegacyDownloadRequest(token: 1, file: "missing", from: "peer"),
+                       PeerOut.transferResponse(token: 1, allowed: false, reason: TransferRejectReason.fileNotShared))
+        XCTAssertTrue(manager.uploads.isEmpty)
+    }
+
+    func testUploadFailedDoesNotRequeueForever() throws {
+        let manager = TransferManager()
+        let gateway = TransferGateway()
+        manager.gateway = gateway
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 1)))
+        manager.handleUploadFailed(file: "song", from: "peer")
+        manager.handleUploadFailed(file: "song", from: "peer")
+        XCTAssertEqual(item.status, .failed("Remote upload failed"))
+        XCTAssertEqual(gateway.messages.count, 2)
+    }
+
+    func testUploadQueuePositionExcludesFinishedHistory() throws {
+        let gateway = TransferGateway()
+        let (manager, first, token) = try upload(Data([1]), gateway: gateway)
+        manager.uploadSlots = 1
+        manager.handleTransferResponse(token: token, allowed: false, reason: TransferRejectReason.complete, from: "peer")
+        _ = manager.handleQueueUpload(file: first.virtualPath, from: "second")
+        _ = manager.handleQueueUpload(file: first.virtualPath, from: "third")
+        var response = MessageBuffer(try XCTUnwrap(manager.handlePlaceInQueueRequest(file: first.virtualPath, from: "third")))
+        _ = try response.readUInt32()
+        XCTAssertEqual(try response.readUInt32(), PeerCode.placeInQueueResponse)
+        _ = try response.readString()
+        XCTAssertEqual(try response.readUInt32(), 1)
+        manager.serverWentOffline()
+    }
+
+    func testDownloadLimitDefersExtraOffers() throws {
+        let manager = TransferManager()
+        manager.maxDownloadConnections = 1
+        for name in ["first", "second"] {
+            _ = manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: name, size: 10))
+        }
+        XCTAssertEqual(manager.handleTransferRequest(direction: TransferDirection.upload, token: 1, file: "first", fileSize: 10, from: "peer"),
+                       PeerOut.transferResponse(token: 1, allowed: true))
+        XCTAssertEqual(manager.handleTransferRequest(direction: TransferDirection.upload, token: 2, file: "second", fileSize: 10, from: "peer"),
+                       PeerOut.transferResponse(token: 2, allowed: false, reason: TransferRejectReason.queued))
+        manager.serverWentOffline()
+    }
+
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -107,7 +237,7 @@ final class TransferRegressionTests: XCTestCase {
         manager.downloadDirectory = try temporaryDirectory()
         let first = manager.addDownload(username: "alice", file: RemoteFileInfo(virtualPath: "\\a\\song.mp3", size: 4))!
         let second = manager.addDownload(username: "bob", file: RemoteFileInfo(virtualPath: "\\b\\song.mp3", size: 4))!
-        XCTAssertEqual(gateway.messages.count, 2, "unknown addresses must still enqueue downloads")
+        XCTAssertEqual(gateway.messages.count, 4, "each download sends a queue request and position request")
         for (item, token, id) in [(first, UInt32(1), UInt64(1)), (second, UInt32(2), UInt64(2))] {
             _ = manager.handleTransferRequest(direction: TransferDirection.upload, token: token,
                                               file: item.virtualPath, fileSize: 4, from: item.username)

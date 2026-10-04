@@ -22,7 +22,9 @@ public final class SoulseekClient: ObservableObject {
     @Published public private(set) var serverBanner: String = ""
     @Published public private(set) var privilegesSeconds: UInt32 = 0
     @Published public private(set) var isAway: Bool = false
+    @Published public private(set) var isGlobalRoomFeedEnabled = false
     @Published public private(set) var users: [String: UserInfo] = [:]
+    @Published public private(set) var userInterests: [String: UserInterestsInfo] = [:]
     @Published public private(set) var privilegedUsers: Set<String> = []
     @Published public private(set) var roomCounts: [String: UInt32] = [:]
     @Published public private(set) var sharesRevision: Int = 0
@@ -61,7 +63,7 @@ public final class SoulseekClient: ObservableObject {
     private var pendingIndirectTokens: [UInt32: String] = [:] // token → username
     private var browseSessions: [String: BrowseSession] = [:]
     private var folderContentsHandlers: [UInt32: ([String: [RemoteFileInfo]]) -> Void] = [:]
-    private var userInfoHandler: ((String, PeerUserInfo) -> Void)?
+    private var userInfoHandlers: [String: (String, PeerUserInfo) -> Void] = [:]
     private let folderTokens = TokenGenerator()
     private var watchedForTransfers = Set<String>()
 
@@ -85,6 +87,8 @@ public final class SoulseekClient: ObservableObject {
 
     public func connect() {
         guard serverStream == nil else { return }
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
         connectionState = .connecting
         let stream = factory.makeServerStream()
         serverStream = stream
@@ -109,6 +113,9 @@ public final class SoulseekClient: ObservableObject {
         peerManager.localUsername = nil
         peerManager.closeAll()
         connectionState = .disconnected
+        loggedInUsername = nil
+        isGlobalRoomFeedEnabled = false
+        search.setWishlistInterval(0)
         transfers.serverWentOffline()
     }
 
@@ -187,7 +194,14 @@ public final class SoulseekClient: ObservableObject {
         distributed.onSendToServer = { [weak self] data in self?.send(data) }
         distributed.onSendToChildren = { [weak self] data in self?.peerManager.sendToDistributedChildren(data) }
         distributed.onSendToConnection = { [weak self] id, data in self?.peerManager.sendDirect(id, data) }
-        distributed.onBranchChanged = { [weak self] in self?.chatRevision += 1 }
+        distributed.onBranchChanged = { [weak self] in
+            guard let self else { return }
+            if let parent = self.distributed.parentUsername {
+                self.peerManager.selectDistributedParent(parent)
+            }
+            self.updateAcceptChildren()
+            self.chatRevision += 1
+        }
         distributed.onDistributedSearch = { [weak self] username, token, query, connectionID in
             self?.handleIncomingSearch(username: username, token: token, query: query,
                                        connectionID: connectionID)
@@ -214,12 +228,17 @@ public final class SoulseekClient: ObservableObject {
         pingTimer?.invalidate()
         pingTimer = nil
         serverAssembler.reset()
+        peerManager.localUsername = nil
+        peerManager.closeAll()
+        loggedInUsername = nil
+        isGlobalRoomFeedEnabled = false
+        search.setWishlistInterval(0)
 
         if connectionState == .loggedIn {
             connectionState = .disconnected
             transfers.serverWentOffline()
             scheduleReconnect()
-        } else if connectionState == .connecting {
+        } else if connectionState == .connecting || connectionState == .loggingIn {
             connectionState = .failed("Could not reach server")
         }
     }
@@ -261,6 +280,8 @@ public final class SoulseekClient: ObservableObject {
                 users[user] = info
                 if status == UserStatusValue.offline {
                     transfers.handleUserWentOffline(user)
+                } else {
+                    transfers.handleUserOnline(user)
                 }
             }
         case ServerCode.sayChatroom:
@@ -340,6 +361,7 @@ public final class SoulseekClient: ObservableObject {
                 users[user] = info
                 if user == loggedInUsername {
                     distributed.uploadSpeed = avgSpeed
+                    updateAcceptChildren()
                 }
                 transferRevision += 1
             }
@@ -365,6 +387,7 @@ public final class SoulseekClient: ObservableObject {
             }
         case ServerCode.parentMinSpeed:
             distributed.parentMinSpeed = (try? buffer.readUInt32()) ?? 0
+            updateAcceptChildren()
         case ServerCode.parentSpeedRatio:
             distributed.parentSpeedRatio = (try? buffer.readUInt32()) ?? 0
             updateAcceptChildren()
@@ -388,9 +411,16 @@ public final class SoulseekClient: ObservableObject {
                 }
             }
             similarUsers = list
+        case ServerCode.recommendations, ServerCode.globalRecommendations:
+            parseRecommendations(&buffer)
+        case ServerCode.userInterests:
+            if let username = try? buffer.readString(),
+               let likes = try? readStringList(&buffer), let hates = try? readStringList(&buffer) {
+                userInterests[username] = UserInterestsInfo(likes: likes, hates: hates)
+            }
         case ServerCode.itemRecommendations:
             if let item = try? buffer.readString() {
-                parseRecommendations(&buffer)
+                parseRecommendations(&buffer, isItem: true)
                 _ = item
             }
         case ServerCode.itemSimilarUsers:
@@ -446,6 +476,7 @@ public final class SoulseekClient: ObservableObject {
                 chatRevision += 1
             }
         case ServerCode.resetDistributed:
+            peerManager.rejectParentCandidates()
             distributed.reset()
             updateAcceptChildren()
         case ServerCode.changePassword:
@@ -542,6 +573,7 @@ public final class SoulseekClient: ObservableObject {
         connectionState = .loggedIn
         loggedInUsername = config.username
         peerManager.localUsername = config.username
+        distributed.localUsername = config.username
         serverBanner = banner
         reconnectAttempts = 0
 
@@ -556,9 +588,18 @@ public final class SoulseekClient: ObservableObject {
         for buddy in config.buddies {
             watchUser(buddy)
         }
-        for room in config.autoJoinRooms {
-            joinRoom(room)
+        watchUser(config.username)
+        send(ServerOut.getUserStats(config.username))
+        for username in Set(transfers.downloads.filter { $0.status == .userOffline }.map(\.username)) {
+            watchUser(username)
         }
+        for room in Set(config.autoJoinRooms + chat.joinedRooms.map(\.name)).sorted() {
+            joinRoom(room, isPrivate: chat.room(named: room)?.isPrivate ?? false)
+        }
+        for item in config.likes { send(ServerOut.addThingILike(item)) }
+        for item in config.hates { send(ServerOut.addThingIHate(item)) }
+        isAway = config.away
+        send(ServerOut.setStatus(isAway ? UserStatusValue.away : UserStatusValue.online))
         publishSharedCounts()
         startPingTimer()
 
@@ -574,6 +615,7 @@ public final class SoulseekClient: ObservableObject {
         guard exists else {
             info.status = UserStatusValue.offline
             users[user] = info
+            transfers.handleUserWentOffline(user)
             transferRevision += 1
             return
         }
@@ -592,6 +634,8 @@ public final class SoulseekClient: ObservableObject {
                 info.country = country
             }
             users[user] = info
+            if status == UserStatusValue.offline { transfers.handleUserWentOffline(user) }
+            else { transfers.handleUserOnline(user) }
         }
         transferRevision += 1
     }
@@ -715,7 +759,7 @@ public final class SoulseekClient: ObservableObject {
             if let forwarded = distributed.handleDistribMessage(code: distribCode, body: body,
                                                                 from: "server", connectionID: 0,
                                                                 isParentCandidate: false) {
-                peerManager.sendToDistributedChildren(Data(bytes: forwarded, count: forwarded.count))
+                peerManager.sendToDistributedChildren(Frame.distributed(code: distribCode, payload: forwarded))
             }
         }
     }
@@ -738,7 +782,13 @@ public final class SoulseekClient: ObservableObject {
         )
     }
 
-    private func parseRecommendations(_ buffer: inout MessageBuffer) {
+    private func readStringList(_ buffer: inout MessageBuffer) throws -> [String] {
+        let count = try buffer.readUInt32()
+        guard count <= buffer.remaining / 4 else { throw SlskError.truncated("string list") }
+        return try (0..<count).map { _ in try buffer.readString() }
+    }
+
+    private func parseRecommendations(_ buffer: inout MessageBuffer, isItem: Bool = false) {
         var recommendations: [Recommendation] = []
         var unrecommendations: [Recommendation] = []
 
@@ -757,7 +807,7 @@ public final class SoulseekClient: ObservableObject {
         parseList()
         if !buffer.isAtEnd { parseList() }
 
-        if recommendations.count > self.recommendations.count || unrecommendations.count > self.unrecommendations.count {
+        if !isItem {
             self.recommendations = recommendations
             self.unrecommendations = unrecommendations
         } else {
@@ -810,11 +860,8 @@ public final class SoulseekClient: ObservableObject {
         guard let payload = try? Zlib.compress(b.data) else { return }
         let response = Frame.peer(code: PeerCode.fileSearchResponse, payload: [UInt8](payload))
 
-        if let connectionID {
-            peerManager.sendDirect(connectionID, response)
-        } else {
-            peerManager.sendToPeer(username, response)
-        }
+        // Nicotine+ search.py sends FileSearchResponse to the searcher, never to the D parent.
+        peerManager.sendToPeer(username, response)
     }
 
     // MARK: - Timers
@@ -830,8 +877,7 @@ public final class SoulseekClient: ObservableObject {
     }
 
     private func updateAcceptChildren() {
-        let accepts = distributed.uploadSpeed >= distributed.parentMinSpeed
-            && distributed.maxChildren > 0
+        let accepts = distributed.children.count < distributed.maxChildren
         send(ServerOut.acceptChildren(accepts))
     }
 
@@ -841,6 +887,14 @@ public final class SoulseekClient: ObservableObject {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory())
         return documents.appendingPathComponent(config.downloadFolderName)
+    }
+
+    public func setDownloadFolderName(_ name: String) {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"),
+              transfers.downloads.allSatisfy({ $0.status == .finished || $0.status == .cancelled }) else { return }
+        config.downloadFolderName = name
+        transfers.downloadDirectory = downloadDirectory
+        saveConfig()
     }
 
     public func rescanShares() {
@@ -933,7 +987,7 @@ public final class SoulseekClient: ObservableObject {
 
     public func requestUserInfo(_ username: String, completion: ((String, PeerUserInfo) -> Void)? = nil) {
         guard isLoggedIn else { return }
-        userInfoHandler = completion
+        userInfoHandlers[username] = completion
         peerManager.sendToPeer(username, PeerOut.userInfoRequest())
     }
 
@@ -1077,10 +1131,13 @@ public final class SoulseekClient: ObservableObject {
     }
 
     public func joinGlobalRoomFeed() {
+        guard isLoggedIn else { return }
+        isGlobalRoomFeedEnabled = true
         send(ServerOut.joinGlobalRoom())
     }
 
     public func leaveGlobalRoomFeed() {
+        isGlobalRoomFeedEnabled = false
         send(ServerOut.leaveGlobalRoom())
         chat.clearGlobalRoomMessages()
         chatRevision += 1
@@ -1165,7 +1222,7 @@ extension SoulseekClient: PeerConnectionManagerDelegate {
             try? search.handleSearchResponse(username: username, body: MessageBuffer(decompressed),
                                              isBanned: { [weak self] in self?.config.bannedUsers.contains($0) ?? false })
         case PeerCode.userInfoRequest:
-            manager.sendToPeer(username, buildUserInfoResponse(totalUploads: 0,
+            manager.sendToPeer(username, buildUserInfoResponse(totalUploads: UInt32(max(1, transfers.uploadSlots)),
                                                                queueSize: UInt32(transfers.queuedUploadCount)))
         case PeerCode.userInfoResponse:
             handleUserInfoResponse(username: username, buffer: &buffer)
@@ -1236,9 +1293,9 @@ extension SoulseekClient: PeerConnectionManagerDelegate {
                             body: MessageBuffer, from username: String, connectionID: UInt64) {
         let forwarded = distributed.handleDistribMessage(code: code, body: body, from: username,
                                                          connectionID: connectionID,
-                                                         isParentCandidate: distributed.parentUsername == nil)
+                                                         isParentCandidate: distributed.parentCandidates.contains { $0.username == username })
         if let forwarded {
-            manager.sendToDistributedChildren(Data(forwarded))
+            manager.sendToDistributedChildren(Frame.distributed(code: code, payload: forwarded))
         }
     }
 
@@ -1267,7 +1324,7 @@ extension SoulseekClient: PeerConnectionManagerDelegate {
     }
 
     public func peerManager(_ manager: PeerConnectionManager, didFailPeerConnection username: String) {
-        transferRevision += 1
+        transfers.handlePeerConnectionFailed(username)
     }
 
     public func peerManager(_ manager: PeerConnectionManager, distributedConnectionClosed username: String) {
@@ -1276,6 +1333,10 @@ extension SoulseekClient: PeerConnectionManagerDelegate {
 
     public func peerManager(_ manager: PeerConnectionManager, didAcceptChildConnection id: UInt64,
                             username: String) {
+        guard distributed.children.count < distributed.maxChildren else {
+            manager.closeFileConnection(id)
+            return
+        }
         distributed.handleChildConnected(username, connectionID: id)
     }
 
@@ -1291,8 +1352,8 @@ extension SoulseekClient: PeerConnectionManagerDelegate {
         for _ in 0 ..< folderCount {
             guard let folder = try? b.readString(),
                   let fileCount = try? b.readUInt32() else { return }
-            if let files = try? FileListCodec.parseFiles(count: fileCount, from: &b) {
-                session.folders[folder] = files
+            if let files = try? FileListCodec.parseFiles(count: fileCount, from: &b, folder: folder) {
+                session.folders[folder.replacingOccurrences(of: "/", with: "\\")] = files
             }
         }
         session.isComplete = true
@@ -1315,8 +1376,7 @@ extension SoulseekClient: PeerConnectionManagerDelegate {
         if buffer.remaining >= 4 {
             info.uploadAllowed = (try? buffer.readUInt32()) ?? 0
         }
-        userInfoHandler?(username, info)
-        userInfoHandler = nil
+        userInfoHandlers.removeValue(forKey: username)?(username, info)
         transferRevision += 1
     }
 
@@ -1331,7 +1391,7 @@ extension SoulseekClient: PeerConnectionManagerDelegate {
         for _ in 0 ..< folderCount {
             guard let folder = try? b.readString(),
                   let fileCount = try? b.readUInt32() else { return }
-            folders[folder] = try? FileListCodec.parseFiles(count: fileCount, from: &b)
+            folders[folder.replacingOccurrences(of: "/", with: "\\")] = try? FileListCodec.parseFiles(count: fileCount, from: &b, folder: folder)
         }
         folderContentsHandlers[token]?(folders)
         folderContentsHandlers[token] = nil

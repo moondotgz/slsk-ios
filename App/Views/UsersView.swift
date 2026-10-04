@@ -54,6 +54,7 @@ struct UsersView: View {
                     Text("Distributed network")
                 }
             }
+            .slskScreen()
             .navigationTitle("Users")
             .sheet(item: selectedUserBinding) { username in
                 UserSheet(username: username)
@@ -81,7 +82,7 @@ struct BuddyRow: View {
                         if info.privileged {
                             Image(systemName: "crown.fill")
                                 .font(.caption2)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.tint)
                         }
                         Text("\(info.stats.sharedFiles) files")
                         Text(Format.speed(Double(info.stats.avgSpeed)))

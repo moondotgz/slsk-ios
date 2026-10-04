@@ -198,6 +198,87 @@ final class ClientIntegrationTests: XCTestCase {
         XCTAssertTrue(codes.contains(ServerCode.roomList))
     }
 
+    func testPeerConnectionFailureUpdatesQueuedDownload() throws {
+        let factory = MockTransportFactory()
+        let (client, server, directory) = makeClient(factory: factory)
+        defer { client.disconnect(); try? FileManager.default.removeItem(at: directory) }
+        login(client, server: server)
+        let item = try XCTUnwrap(client.transfers.addDownload(username: "offline", file: RemoteFileInfo(virtualPath: "song", size: 10)))
+        server.inject(TestFrames.peerAddress(username: "offline", ip: [0, 0, 0, 0], port: 0))
+        pump()
+        XCTAssertEqual(item.status, .failed("Peer connection failed"))
+    }
+
+    func testRecommendationsInterestsAndGlobalFeedState() throws {
+        let factory = MockTransportFactory()
+        let (client, server, directory) = makeClient(factory: factory)
+        defer { client.disconnect(); try? FileManager.default.removeItem(at: directory) }
+        login(client, server: server)
+        var recommendations = MessageBuffer()
+        recommendations.writeUInt32(1)
+        recommendations.writeString("music")
+        recommendations.writeInt32(5)
+        recommendations.writeUInt32(0)
+        server.inject(Frame.server(code: ServerCode.recommendations, payload: recommendations.bytes))
+        var interests = MessageBuffer()
+        interests.writeString("peer")
+        interests.writeUInt32(1)
+        interests.writeString("rock")
+        interests.writeUInt32(1)
+        interests.writeString("spam")
+        server.inject(Frame.server(code: ServerCode.userInterests, payload: interests.bytes))
+        pump()
+        XCTAssertEqual(client.recommendations.first?.item, "music")
+        XCTAssertEqual(client.userInterests["peer"]?.likes, ["rock"])
+        XCTAssertEqual(client.userInterests["peer"]?.hates, ["spam"])
+        var empty = MessageBuffer()
+        empty.writeUInt32(0)
+        empty.writeUInt32(0)
+        server.inject(Frame.server(code: ServerCode.globalRecommendations, payload: empty.bytes))
+        pump()
+        XCTAssertTrue(client.recommendations.isEmpty, "shorter responses must replace older lists")
+        client.joinGlobalRoomFeed()
+        XCTAssertTrue(client.isGlobalRoomFeedEnabled, "feed is enabled even before any messages arrive")
+        client.leaveGlobalRoomFeed()
+        XCTAssertFalse(client.isGlobalRoomFeedEnabled)
+    }
+
+    func testEmbeddedSearchRespondsToSearcherAndForwardsFramedMessagesOnlyToChildren() throws {
+        let factory = MockTransportFactory()
+        let (client, server, directory) = makeClient(factory: factory)
+        defer { client.disconnect(); try? FileManager.default.removeItem(at: directory) }
+        login(client, server: server)
+        let root = directory.appendingPathComponent("share")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data([1]).write(to: root.appendingPathComponent("music.mp3"))
+        client.setSharedDirectories([root])
+        pump(0.1)
+        client.distributed.parentMinSpeed = 1
+        client.distributed.parentSpeedRatio = 1
+        client.distributed.uploadSpeed = 100
+        let child = factory.listener.accept()
+        pump(0.02)
+        child.inject(PeerInitOut.peerInit(username: "child", type: ConnectionType.distributed))
+        pump(0.02)
+        var search = MessageBuffer()
+        search.writeUInt32(49)
+        search.writeString("searcher")
+        search.writeUInt32(7)
+        search.writeString("music")
+        var embedded = MessageBuffer()
+        embedded.writeByte(DistribCode.distribSearch.rawValue)
+        embedded.writeBytes(search.bytes)
+        server.inject(Frame.server(code: ServerCode.embeddedMessage, payload: embedded.bytes))
+        pump(0.02)
+        XCTAssertEqual(child.sentFrames.last, Frame.distributed(code: DistribCode.distribSearch.rawValue, payload: search.bytes))
+        server.inject(TestFrames.peerAddress(username: "searcher", ip: [1, 0, 0, 127], port: 5000))
+        pump(0.02)
+        let peer = try XCTUnwrap(factory.peerStreams.last)
+        var response = MessageBuffer(try XCTUnwrap(peer.sentFrames.last))
+        _ = try response.readUInt32()
+        XCTAssertEqual(try response.readUInt32(), PeerCode.fileSearchResponse)
+    }
+
     func testCompressedSearchResultsOverDirectAndIndirectPeerConnections() throws {
         for indirect in [false, true] {
             let factory = MockTransportFactory()
@@ -274,7 +355,7 @@ final class ClientIntegrationTests: XCTestCase {
         browse.writeUInt32(1)
         browse.writeString(file.folder)
         browse.writeUInt32(1)
-        FileListCodec.packFileInfo(file, into: &browse)
+        FileListCodec.packFileInfo(file, into: &browse, includeFolder: false)
         browse.writeUInt32(0)
         peer.inject(Frame.peer(code: PeerCode.sharedFileListResponse,
                                payload: [UInt8](try Zlib.compress(browse.data))))
@@ -295,7 +376,7 @@ final class ClientIntegrationTests: XCTestCase {
         folder.writeUInt32(1)
         folder.writeString(file.folder)
         folder.writeUInt32(1)
-        FileListCodec.packFileInfo(file, into: &folder)
+        FileListCodec.packFileInfo(file, into: &folder, includeFolder: false)
         peer.inject(Frame.peer(code: PeerCode.folderContentsResponse,
                                payload: [UInt8](try Zlib.compress(folder.data))))
         pump()

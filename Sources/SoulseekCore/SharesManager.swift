@@ -80,7 +80,10 @@ public final class SharesManager {
                     index += 1
                     guard let contents = try? fileManager.contentsOfDirectory(atPath: directory) else { continue }
                     for entry in contents {
+                        guard !entry.hasPrefix(".") else { continue }
                         let fullPath = directory + "/" + entry
+                        let type = (try? fileManager.attributesOfItem(atPath: fullPath))?[.type] as? FileAttributeType
+                        guard type != .typeSymbolicLink else { continue }
                         var isDirectory: ObjCBool = false
                         guard fileManager.fileExists(atPath: fullPath, isDirectory: &isDirectory) else { continue }
                         if isDirectory.boolValue {
@@ -94,10 +97,17 @@ public final class SharesManager {
                 }
             }
 
+            let scannedFolders = folders
+            let scannedFiles = fileMap
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.folders = folders
-                self.fileMap = fileMap
+                guard self.shareRoots == roots else {
+                    self.isScanning = false
+                    self.rescan(completion: completion)
+                    return
+                }
+                self.folders = scannedFolders
+                self.fileMap = scannedFiles
                 self.isScanning = false
                 self.lastScanDate = Date()
                 completion?()
@@ -153,6 +163,9 @@ public final class SharesManager {
         for phrase in query.excludedPhrases where lowered.contains(phrase) {
             return false
         }
+        for phrase in query.includedPhrases where !lowered.contains(phrase) {
+            return false
+        }
         return true
     }
 
@@ -166,7 +179,7 @@ public final class SharesManager {
             let files = folders[folder] ?? []
             b.writeUInt32(UInt32(files.count))
             for file in files {
-                FileListCodec.packFileInfo(file, into: &b)
+                FileListCodec.packFileInfo(file, into: &b, includeFolder: false)
             }
         }
         b.writeUInt32(0) // unknown field sent by official clients
@@ -198,7 +211,7 @@ public final class SharesManager {
             b.writeString(name)
             b.writeUInt32(UInt32(files.count))
             for file in files {
-                FileListCodec.packFileInfo(file, into: &b)
+                FileListCodec.packFileInfo(file, into: &b, includeFolder: false)
             }
         }
         return try Zlib.compress(b.data)

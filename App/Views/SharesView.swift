@@ -6,6 +6,8 @@ import UniformTypeIdentifiers
 final class ShareBookmarks {
     static let shared = ShareBookmarks()
     private var bookmarks: [String: Data] = [:]
+    private var resolvedURLs: [String: URL] = [:]
+    private var scopedURLs = Set<String>()
     private var fileURL: URL {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         return documents.appendingPathComponent("SlskData/share-bookmarks.plist")
@@ -19,28 +21,41 @@ final class ShareBookmarks {
     }
 
     func save(url: URL) {
+        acquire(url)
         guard let data = try? url.bookmarkData() else { return }
-        bookmarks[url.lastPathComponent] = data
+        bookmarks[url.absoluteString] = data
         persist()
     }
 
-    func remove(named name: String) {
-        bookmarks.removeValue(forKey: name)
+    func remove(url: URL) {
+        bookmarks.removeValue(forKey: url.absoluteString)
+        bookmarks.removeValue(forKey: url.lastPathComponent)
+        resolvedURLs.removeValue(forKey: url.absoluteString)
+        if scopedURLs.remove(url.absoluteString) != nil { url.stopAccessingSecurityScopedResource() }
         persist()
+    }
+
+    private func acquire(_ url: URL) {
+        guard resolvedURLs[url.absoluteString] == nil else { return }
+        if url.startAccessingSecurityScopedResource() { scopedURLs.insert(url.absoluteString) }
+        resolvedURLs[url.absoluteString] = url
     }
 
     /// Resolve all stored bookmarks and start security-scoped access.
     func resolveAll() -> [URL] {
-        var urls: [URL] = []
-        for (_, data) in bookmarks {
+        var migrated = bookmarks
+        for (key, data) in bookmarks {
             var stale = false
             if let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil,
                                   bookmarkDataIsStale: &stale) {
-                url.startAccessingSecurityScopedResource()
-                urls.append(url)
+                acquire(url)
+                migrated[key] = nil
+                migrated[url.absoluteString] = stale ? ((try? url.bookmarkData()) ?? data) : data
             }
         }
-        return urls
+        bookmarks = migrated
+        persist()
+        return resolvedURLs.values.sorted { $0.absoluteString < $1.absoluteString }
     }
 
     private func persist() {
@@ -95,7 +110,7 @@ struct SharesView: View {
                     ForEach(client.shares.sharedDirectories, id: \.absoluteString) { url in
                         HStack {
                             Image(systemName: "folder.fill")
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.tint)
                             VStack(alignment: .leading) {
                                 Text(url.lastPathComponent)
                                 Text(url.deletingLastPathComponent().path)
@@ -107,7 +122,7 @@ struct SharesView: View {
                     }
                     .onDelete { indexSet in
                         for index in indexSet {
-                            ShareBookmarks.shared.remove(named: client.shares.sharedDirectories[index].lastPathComponent)
+                            ShareBookmarks.shared.remove(url: client.shares.sharedDirectories[index])
                         }
                         var remaining = client.shares.sharedDirectories
                         remaining.remove(atOffsets: indexSet)
@@ -136,6 +151,7 @@ struct SharesView: View {
                     Text("Sent to users who request your info.")
                 }
             }
+            .slskScreen()
             .navigationTitle("Shares")
             .fileImporter(isPresented: $showImporter,
                           allowedContentTypes: [.folder],
@@ -144,7 +160,9 @@ struct SharesView: View {
                 for url in urls {
                     ShareBookmarks.shared.save(url: url)
                 }
-                client.setSharedDirectories(urls)
+                var combined = client.shares.sharedDirectories
+                for url in urls where !combined.contains(url) { combined.append(url) }
+                client.setSharedDirectories(combined)
             }
             .onAppear {
                 description = client.config.userInfoDescription

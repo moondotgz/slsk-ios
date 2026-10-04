@@ -12,6 +12,8 @@ struct ChatView: View {
                     Text("Private").tag(1)
                 }
                 .pickerStyle(.segmented)
+                .padding(8)
+                .slskGlassSurface()
                 .padding()
 
                 if segment == 0 {
@@ -20,6 +22,7 @@ struct ChatView: View {
                     PrivateMessagesListView()
                 }
             }
+            .slskScreen()
             .navigationTitle("Chat")
         }
     }
@@ -44,7 +47,7 @@ struct RoomsListView: View {
                                 if room.isPrivate {
                                     Image(systemName: "lock.fill")
                                         .font(.caption)
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(.tint)
                                 }
                                 Spacer()
                                 Text("\(room.users.count)")
@@ -171,7 +174,7 @@ struct RoomMembersSheet: View {
                                 if roomHolder.room.owner == user {
                                     Image(systemName: "crown.fill")
                                         .font(.caption)
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(.tint)
                                 }
                                 if roomHolder.room.operators.contains(user) {
                                     Image(systemName: "checkmark.shield.fill")
@@ -183,6 +186,7 @@ struct RoomMembersSheet: View {
                     }
                 }
             }
+            .slskScreen()
             .navigationTitle("Members")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -319,14 +323,14 @@ struct GlobalFeedView: View {
                 MessageBubble(message: message)
             }
             HStack {
-                Button(client.chat.globalRoomMessages.isEmpty ? "Enable feed" : "Disable feed") {
-                    if client.chat.globalRoomMessages.isEmpty {
+                Button(client.isGlobalRoomFeedEnabled ? "Disable feed" : "Enable feed") {
+                    if !client.isGlobalRoomFeedEnabled {
                         client.joinGlobalRoomFeed()
                     } else {
                         client.leaveGlobalRoomFeed()
                     }
                 }
-                .buttonStyle(.bordered)
+                .slskGlassButton()
             }
             .padding()
         }
@@ -360,11 +364,12 @@ struct MessageList<Message: View>: View {
                 }
             }
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background { SlskBackdrop() }
     }
 }
 
 struct MessageBubble: View {
+    @Environment(\.slskAccent) private var accent
     let message: ChatMessage
 
     var body: some View {
@@ -375,7 +380,7 @@ struct MessageBubble: View {
                     if !message.isSelf {
                         Text(message.username)
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.tint)
                     }
                     Text(message.timestamp, style: .time)
                         .font(.caption2)
@@ -386,7 +391,7 @@ struct MessageBubble: View {
                     .textSelection(.enabled)
             }
             .padding(10)
-            .background(message.isSelf ? Color.orange.opacity(0.25) : Color(uiColor: .secondarySystemGroupedBackground))
+            .background(message.isSelf ? accent.opacity(0.25) : Color(uiColor: .secondarySystemGroupedBackground))
             .clipShape(RoundedRectangle(cornerRadius: 14))
             if !message.isSelf { Spacer(minLength: 40) }
         }
@@ -414,10 +419,16 @@ struct MessageInput: View {
                 text = ""
             } label: {
                 Image(systemName: "paperplane.fill")
+                    .frame(minWidth: 24, minHeight: 24)
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .accessibilityLabel("Send message")
             .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(10)
-        .background(.bar)
+        .slskGlassSurface(cornerRadius: 28)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }

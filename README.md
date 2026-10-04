@@ -29,23 +29,47 @@ reverse engineering of the network.
 
 ## Getting the app
 
+### Liquid Glass branch
+
+`liquidglass` adds native Liquid Glass navigation and controls on iOS 26 and
+newer: floating search controls, chat composers, glass buttons and segmented
+panels over an adaptive orange/teal backdrop. File lists and messages stay
+readable. Older iOS versions use material fallbacks; Reduce Transparency and
+Increase Contrast use opaque control surfaces. iOS 16 remains supported.
+
+Select `liquidglass` when running Actions to build this interface. This branch
+uses GitHub's `xcode-27` runner (macOS 27 / Xcode 27, currently public preview).
+Local app builds need Xcode 26 or newer.
+
+In **Settings → Appearance**, use the color pickers to customize the accent
+and secondary backdrop colors. Changes apply immediately and persist across
+launches. **Reset theme colors** restores orange/teal. Connection and transfer
+status colors remain unchanged.
+
 The repository has no committed Xcode project and releases are built in CI:
 
 1. Push this repository to GitHub, including `.github/workflows/build.yml`.
 2. Go to **Actions → Build → Run workflow**, select a branch, and run it.
-   Pushes to `main` and pull requests also trigger the workflow.
+   Pushes to `main` or `liquidglass` and pull requests also trigger the workflow.
 3. Once the Linux tests and macOS build succeed, open the workflow run and
    download **`Slsk-unsigned-ipa`** from **Artifacts**. Extract the downloaded
    ZIP to get `Slsk-unsigned.ipa`.
 4. Sideload the IPA with [Sideloadly](https://sideloadly.io/),
    [AltStore](https://altstore.io/) (free Apple ID, 7-day resigning) or
-   [TrollStore](https://github.com/opa334/TrollStore) (unsigned IPA installs
-   directly on supported firmwares).
+   [SideStore](https://github.com/SideStore/SideStore),
+   [LiveContainer](https://github.com/LiveContainer/LiveContainer), or
+   [TrollStore](https://github.com/opa334/TrollStore) (which installs unsigned
+   IPAs directly on supported firmware).
 
 The build requires no Apple Developer certificates or GitHub secrets. The IPA
-is unsigned; your sideloading tool handles signing. IPA artifacts are kept for
-30 days. If the archive fails, download **`Slsk-build-diagnostics`** for the
-Xcode log and result bundle (kept for 14 days).
+is unsigned; your sideloading tool handles signing. You can also sign it with
+a paid Apple Developer membership and its development certificate and
+provisioning profile, or with an appropriate paid distribution-signing service
+and certificate. Certificate type, device eligibility, provisioning, and
+renewal requirements vary; check the provider's current terms. IPA artifacts
+are kept for 30 days. If the archive fails, download
+**`Slsk-build-diagnostics`** for the Xcode log and result bundle (kept for 14
+days).
 
 Downloads are stored in the app's Documents folder (visible in the Files app
 under *On My iPhone → Slsk*). Shared folders are picked from the Files app;
@@ -55,6 +79,10 @@ the app remembers them via security-scoped bookmarks.
 
 See [AGENTS.md](AGENTS.md) for the full architecture, protocol notes and
 build instructions. Quick version:
+
+The [Liquid Glass protocol audit](docs/PROTOCOL_AUDIT.md) records fixed
+interoperability bugs, regression coverage, remaining gaps, and on-device
+checks required before merging.
 
 - `swift test` — run the protocol/core test suite (works on Linux and macOS)
 - The IPA is built by GitHub Actions on macOS runners (XcodeGen + unsigned

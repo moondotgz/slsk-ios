@@ -86,7 +86,12 @@ public final class TransferManager {
 
     private func enqueueDownload(_ item: DownloadItem) {
         item.status = .queued
+        item.queuePosition = 0
+        startTimeout(for: item)
         gateway?.sendToPeer(item.username, PeerOut.queueUpload(item.virtualPath))
+        if item.status == .queued {
+            gateway?.sendToPeer(item.username, PeerOut.placeInQueueRequest(item.virtualPath))
+        }
         notifyChanged()
     }
 
@@ -128,14 +133,18 @@ public final class TransferManager {
     // MARK: Download event handlers (invoked by SoulseekClient)
 
     public func handlePlaceInQueueResponse(file: String, place: UInt32, from username: String) {
-        guard let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }) else { return }
+        guard let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }),
+              item.status == .queued || item.status == .remotelyQueued else { return }
+        timeoutTimers[item.id]?.invalidate()
+        timeoutTimers[item.id] = nil
         item.queuePosition = place
         item.status = .remotelyQueued
         notifyChanged()
     }
 
     public func handleUploadDenied(file: String, reason: String, from username: String) {
-        guard let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }) else { return }
+        guard let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }),
+              item.status.isActive else { return }
         deactivateDownload(item)
         item.status = .failed(reason)
         notifyChanged()
@@ -146,8 +155,9 @@ public final class TransferManager {
         guard let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }),
               item.status.isActive else { return }
         deactivateDownload(item)
-        item.status = .queued
-        enqueueDownload(item)
+        item.status = .failed("Remote upload failed")
+        notifyChanged()
+        persist()
     }
 
     /// Uploader signals readiness (TransferRequest, direction upload).
@@ -156,7 +166,14 @@ public final class TransferManager {
         guard direction == TransferDirection.upload else { return nil }
 
         if let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }),
-           item.status.isActive, item.status != .transferring {
+           (item.status.isActive || item.status == .failed("Connection timeout")
+            || item.status == .failed("Peer connection failed")), item.status != .transferring {
+            guard activeDownloads.values.filter({ $0 !== item }).count < max(1, maxDownloadConnections) else {
+                return PeerOut.transferResponse(token: token, allowed: false, reason: TransferRejectReason.queued)
+            }
+            for oldToken in activeDownloads.keys.filter({ activeDownloads[$0] === item }) {
+                activeDownloads[oldToken] = nil
+            }
             if let fileSize, fileSize > 0 {
                 item.size = fileSize
             }
@@ -275,6 +292,27 @@ public final class TransferManager {
         notifyChanged()
     }
 
+    public func handleUserOnline(_ username: String) {
+        for item in downloads where item.username == username && item.status == .userOffline {
+            enqueueDownload(item)
+        }
+    }
+
+    public func handlePeerConnectionFailed(_ username: String) {
+        for item in downloads where item.username == username && item.status.isActive
+            && item.status != .transferring {
+            deactivateDownload(item)
+            item.status = .failed("Peer connection failed")
+        }
+        for item in uploads where item.username == username && item.status == .connecting {
+            abortActiveUpload(item, token: uploadToken(for: item))
+            item.status = .failed("Peer connection failed")
+        }
+        checkUploadQueue()
+        persist()
+        notifyChanged()
+    }
+
     private func finishDownload(_ item: DownloadItem, connectionID: UInt64?) {
         deactivateDownload(item)
         do {
@@ -312,6 +350,7 @@ public final class TransferManager {
                 self.deactivateDownload(download)
                 download.status = .failed("Connection timeout")
                 self.notifyChanged()
+                self.persist()
             } else if let upload = item as? UploadItem {
                 self.abortActiveUpload(upload, token: self.uploadToken(for: upload))
                 upload.status = .failed("Connection timeout")
@@ -350,17 +389,23 @@ public final class TransferManager {
 
     /// Legacy TransferRequest(direction 0): respond "Queued" and enqueue.
     public func handleLegacyDownloadRequest(token: UInt32, file: String, from username: String) -> Data {
+        if isBanned(username) {
+            return PeerOut.transferResponse(token: token, allowed: false, reason: TransferRejectReason.banned)
+        }
+        guard shares?.isShared(virtualPath: file) == true else {
+            return PeerOut.transferResponse(token: token, allowed: false, reason: TransferRejectReason.fileNotShared)
+        }
         _ = handleQueueUpload(file: file, from: username)
         return PeerOut.transferResponse(token: token, allowed: false, reason: TransferRejectReason.queued)
     }
 
     /// Peer asked for its position in our upload queue.
     public func handlePlaceInQueueRequest(file: String, from username: String) -> Data? {
-        guard let index = uploads.firstIndex(where: {
+        let waiting = uploads.filter { $0.status == .queued }
+        guard let index = waiting.firstIndex(where: {
             $0.username == username && $0.virtualPath == file && $0.status == .queued
         }) else { return nil }
-        let activeCount = uploads.filter { $0.status.isActive && $0.status != .queued }.count
-        return PeerOut.placeInQueueResponse(file: file, place: UInt32(max(1, index - activeCount + 1)))
+        return PeerOut.placeInQueueResponse(file: file, place: UInt32(index + 1))
     }
 
     /// Response to our TransferRequest(upload) offer.
@@ -571,12 +616,10 @@ public final class TransferManager {
         notifyChanged()
     }
 
-    private func queueMaintenanceTick() {
-        // Ask for queue positions for downloads waiting a long time remotely.
-        let now = Date()
-        for item in downloads where item.status == .remotelyQueued {
+    func queueMaintenanceTick() {
+        for item in downloads where item.status == .queued || item.status == .remotelyQueued {
+            if timeoutTimers[item.id] == nil { startTimeout(for: item) }
             gateway?.sendToPeer(item.username, PeerOut.placeInQueueRequest(item.virtualPath))
-            _ = now
         }
         checkUploadQueue()
     }
@@ -628,7 +671,8 @@ public final class TransferManager {
     private func loadPersisted() {
         guard let storage else { return }
         if let savedDownloads = storage.load([DownloadItem].self, as: "downloads") {
-            downloads = savedDownloads.filter { $0.status == .finished || $0.status == .paused }
+            downloads = savedDownloads.filter { $0.status != .cancelled && $0.status != .filtered }
+            for item in downloads where item.status.isActive { item.status = .paused }
         }
         if let savedUploads = storage.load([UploadItem].self, as: "uploads") {
             uploads = savedUploads.filter { $0.status == .finished }
@@ -637,9 +681,11 @@ public final class TransferManager {
 
     public func persist() {
         guard let storage else { return }
-        let keepDownloads = downloads.filter { $0.status == .finished || $0.status == .paused || $0.status == .queued }
+        let keepDownloads = downloads.filter { $0.status != .cancelled && $0.status != .filtered }
         let keepUploads = uploads.filter { $0.status == .finished }
-        storage.save(Array(keepDownloads.prefix(500)), as: "downloads")
+        let unfinished = keepDownloads.filter { $0.status != .finished }
+        let history = keepDownloads.filter { $0.status == .finished }.suffix(500)
+        storage.save(unfinished + history, as: "downloads")
         storage.save(Array(keepUploads.prefix(500)), as: "uploads")
     }
 

@@ -80,7 +80,7 @@ public struct MessageBuffer {
     }
 
     public mutating func readBytes(_ count: Int) throws -> [UInt8] {
-        guard remaining >= count else { throw SlskError.truncated("bytes(\(count))") }
+        guard count >= 0, remaining >= count else { throw SlskError.truncated("bytes(\(count))") }
         let slice = Array(bytes[offset ..< offset + count])
         offset += count
         return slice
@@ -173,7 +173,8 @@ public struct MessageBuffer {
 extension MessageBuffer {
     /// Advance without interpreting bytes (used by the 2 GiB size workaround).
     public mutating func advance(_ count: Int) {
-        offset = min(bytes.count, offset + count)
+        guard count >= 0 else { return }
+        offset += min(remaining, count)
     }
 }
 

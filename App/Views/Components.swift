@@ -74,7 +74,7 @@ struct UserSheet: View {
                         }
                         if info.privileged {
                             Label("Privileged", systemImage: "crown.fill")
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.tint)
                         }
                         if let country = info.country, !country.isEmpty {
                             Label("Country: \(country)", systemImage: "globe")
@@ -119,13 +119,17 @@ struct UserSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(info.description.isEmpty ? "No description" : info.description)
                                 .font(.footnote)
-                            if !info.interests.isEmpty {
-                                Text("Likes: " + info.interests.joined(separator: ", "))
+                        }
+                    }
+                    if let interests = client.userInterests[username] {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if !interests.likes.isEmpty {
+                                Text("Likes: " + interests.likes.joined(separator: ", "))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                            if !info.hates.isEmpty {
-                                Text("Dislikes: " + info.hates.joined(separator: ", "))
+                            if !interests.hates.isEmpty {
+                                Text("Dislikes: " + interests.hates.joined(separator: ", "))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -159,6 +163,7 @@ struct UserSheet: View {
                     }
                 }
             }
+            .slskScreen()
             .navigationTitle("User")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -210,6 +215,7 @@ struct BrowseSheet: View {
                     }
                 }
             }
+            .slskScreen()
             .navigationTitle("Browse \(username)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -240,7 +246,7 @@ struct FolderRow: View {
             } label: {
                 HStack {
                     Image(systemName: expanded ? "folder.fill" : "folder")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.tint)
                     Text(folderName)
                         .font(.subheadline)
                         .multilineTextAlignment(.leading)

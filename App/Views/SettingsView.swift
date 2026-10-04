@@ -12,6 +12,8 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                ThemeSettingsSection()
+
                 Section {
                     LabeledContent("Username", value: client.config.username)
                     LabeledContent("Status") {
@@ -63,8 +65,9 @@ struct SettingsView: View {
                         .onSubmit(saveSlots)
                     TextField("Download folder name", text: Binding(
                         get: { client.config.downloadFolderName },
-                        set: { client.config.downloadFolderName = $0; client.saveConfig() }
+                        set: { client.setDownloadFolderName($0) }
                     ))
+                    .disabled(!client.transfers.downloads.allSatisfy { $0.status == .finished || $0.status == .cancelled })
                     LabeledContent("Download location") {
                         Text("Files/\(client.config.downloadFolderName)")
                             .font(.footnote)
@@ -219,6 +222,7 @@ struct SettingsView: View {
                     Text("About")
                 }
             }
+            .slskScreen()
             .navigationTitle("Settings")
             .onAppear {
                 uploadSlots = String(client.transfers.uploadSlots)

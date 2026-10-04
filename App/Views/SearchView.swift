@@ -9,35 +9,6 @@ struct SearchView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    HStack {
-                        TextField("Search files…", text: $query)
-                            .onSubmit(submitSearch)
-                            .textInputAutocapitalization(.never)
-                        Button {
-                            submitSearch()
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                        }
-                        .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                    Toggle("Free upload slot only", isOn: $freeSlotOnly)
-                        .onChange(of: freeSlotOnly) { _ in
-                            client.search.filter.freeSlotOnly = freeSlotOnly
-                        }
-                    HStack {
-                        TextField("Min bitrate (kbps)", text: $minBitrate)
-                            .keyboardType(.numberPad)
-                        Spacer()
-                        if !minBitrate.isEmpty {
-                            Button("Apply") {
-                                client.search.filter.minimumBitrate = UInt32(minBitrate) ?? 0
-                            }
-                            .font(.footnote)
-                        }
-                    }
-                }
-
                 ForEach(client.search.activeSessions, id: \.token) { session in
                     Section {
                         HStack {
@@ -86,9 +57,57 @@ struct SearchView: View {
                     }
                 }
             }
+            .slskScreen()
+            .safeAreaInset(edge: .top, spacing: 0) {
+                searchControls
+                    .padding(16)
+                    .slskGlassSurface(cornerRadius: 28)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            }
             .navigationTitle("Search")
             .onAppear {
                 freeSlotOnly = client.search.filter.freeSlotOnly
+                let minimum = client.search.filter.minimumBitrate
+                minBitrate = minimum == 0 ? "" : String(minimum)
+            }
+        }
+    }
+
+    private var searchControls: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                TextField("Search files…", text: $query)
+                    .onSubmit(submitSearch)
+                    .submitLabel(.search)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(.vertical, 8)
+                Button(action: submitSearch) {
+                    Image(systemName: "magnifyingglass")
+                        .frame(minWidth: 24, minHeight: 24)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .accessibilityLabel("Search files")
+                .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            DisclosureGroup("Filters") {
+                Toggle("Free upload slot only", isOn: $freeSlotOnly)
+                    .font(.subheadline)
+                    .onChange(of: freeSlotOnly) { _ in
+                        client.search.filter.freeSlotOnly = freeSlotOnly
+                    }
+                    .padding(.vertical, 8)
+                HStack {
+                    TextField("Min bitrate (kbps)", text: $minBitrate)
+                        .keyboardType(.numberPad)
+                    Button("Apply") {
+                        client.search.filter.minimumBitrate = UInt32(minBitrate) ?? 0
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                }
             }
         }
     }
@@ -121,7 +140,7 @@ struct SearchFolderSection: View {
             } label: {
                 HStack {
                     Image(systemName: expanded ? "folder.fill" : "folder")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(lastFolderComponent)
                             .font(.subheadline.weight(.medium))
@@ -163,6 +182,7 @@ struct SearchFolderSection: View {
 }
 
 struct HitRow: View {
+    @Environment(\.slskAccent) private var accent
     @EnvironmentObject private var client: SoulseekClient
     let hit: SearchHit
 
@@ -210,7 +230,7 @@ struct HitRow: View {
             } label: {
                 Image(systemName: "arrow.down.circle")
                     .font(.title3)
-                    .foregroundStyle(hit.freeUploadSlot ? .green : .orange)
+                    .foregroundStyle(hit.freeUploadSlot ? Color.green : accent)
             }
         }
         .padding(.vertical, 2)

@@ -10,7 +10,7 @@ struct SlskApp: App {
             RootView()
                 .environmentObject(appState)
                 .environmentObject(appState.client)
-                .tint(.orange)
+                .modifier(SlskTheme())
                 .onChange(of: scenePhase) { phase in
                     if phase == .background {
                         appState.client.saveAll()
@@ -35,6 +35,8 @@ final class AppState: ObservableObject {
         self.client = client
         needsLogin = client.config.username.isEmpty
         client.start()
+        let sharedDirectories = ShareBookmarks.shared.resolveAll()
+        if !sharedDirectories.isEmpty { client.setSharedDirectories(sharedDirectories) }
     }
 
     func loggedIn() {

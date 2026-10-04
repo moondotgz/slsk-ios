@@ -41,7 +41,7 @@ public struct RemoteFileInfo: Equatable, Identifiable {
     public var durationSeconds: UInt32? {
         if let duration { return duration }
         guard let bitrate, bitrate > 0 else { return nil }
-        return UInt64(bitrate) > 0 ? UInt32(min(UInt64.max, size / (UInt64(bitrate) * 125))) : nil
+        return UInt32(min(UInt64(UInt32.max), size / (UInt64(bitrate) * 125)))
     }
 }
 
@@ -50,9 +50,9 @@ public struct RemoteFileInfo: Equatable, Identifiable {
 /// `FileListMessage.pack_file_info` and `unpack_file_size` (Soulseek NS
 /// 2 GiB bug workaround included).
 public enum FileListCodec {
-    public static func packFileInfo(_ file: RemoteFileInfo, into b: inout MessageBuffer) {
+    public static func packFileInfo(_ file: RemoteFileInfo, into b: inout MessageBuffer, includeFolder: Bool = true) {
         b.writeByte(1)
-        b.writeString(file.virtualPath)
+        b.writeString(includeFolder ? file.virtualPath : file.fileName)
         b.writeUInt64(file.size)
         b.writeUInt32(0) // obsolete "ext" field
         var attributes = MessageBuffer()
@@ -87,7 +87,7 @@ public enum FileListCodec {
     }
 
     /// Parse a list of `count` file entries.
-    public static func parseFiles(count: UInt32, from b: inout MessageBuffer) throws -> [RemoteFileInfo] {
+    public static func parseFiles(count: UInt32, from b: inout MessageBuffer, folder: String? = nil) throws -> [RemoteFileInfo] {
         var files: [RemoteFileInfo] = []
         files.reserveCapacity(Int(min(count, 100_000)))
         for _ in 0 ..< count {
@@ -116,8 +116,13 @@ public enum FileListCodec {
                 default: break
                 }
             }
+            var path = name.replacingOccurrences(of: "/", with: "\\")
+            // SharedFileListResponse/FolderContentsResponse use basenames, unlike search responses.
+            if let folder, !path.contains("\\") {
+                path = folder.replacingOccurrences(of: "/", with: "\\") + "\\" + path
+            }
             files.append(RemoteFileInfo(
-                virtualPath: name.replacingOccurrences(of: "/", with: "\\"),
+                virtualPath: path,
                 size: size, bitrate: bitrate, duration: duration, vbr: vbr,
                 sampleRate: sampleRate, bitDepth: bitDepth
             ))
