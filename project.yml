@@ -1,0 +1,60 @@
+name: Slsk
+options:
+  bundleIdPrefix: app.slsk
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    GENERATE_INFOPLIST_FILE: "NO"
+    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "1.0"
+
+targets:
+  Slsk:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Sources/SoulseekCore
+      - path: Sources/CZlib/shims.c
+      - path: Sources/CZlib/include/shims.h
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.slsk.ios
+        INFOPLIST_FILE: App/Info.plist
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Sources/CZlib/include"
+        OTHER_LDFLAGS: "-lz"
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+        SUPPORTS_MACCATALYST: "NO"
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Slsk
+        CFBundleName: Slsk
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        ITSAppUsesNonExemptEncryption: false
+
+schemes:
+  Slsk:
+    build:
+      targets:
+        Slsk: all
+    run:
+      config: Debug
+    archive:
+      config: Release

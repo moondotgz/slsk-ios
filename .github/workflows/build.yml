@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-tests:
+    name: SoulseekCore tests (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install zlib headers
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq zlib1g-dev git
+      - name: Run tests
+        run: swift test
+
+  build-ipa:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Show available schemes
+        run: xcodebuild -project Slsk.xcodeproj -list
+
+      - name: Build archive
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project Slsk.xcodeproj \
+            -scheme Slsk \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Slsk.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            CODE_SIGN_ENTITLEMENTS=
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R "build/Slsk.xcarchive/Products/Applications/Slsk.app" build/Payload/
+          cd build
+          zip -qry Slsk-unsigned.ipa Payload
+          ls -lh Slsk-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Slsk-unsigned-ipa
+          path: build/Slsk-unsigned.ipa
+          if-no-files-found: error

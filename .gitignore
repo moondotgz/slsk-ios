@@ -1,0 +1,14 @@
+# Xcode / XcodeGen
+*.xcodeproj
+build/
+DerivedData/
+
+# SwiftPM
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# App data (local test runs)
+*.json.tmp
