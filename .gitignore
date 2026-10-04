@@ -1,6 +1,8 @@
 # Xcode / XcodeGen
 *.xcodeproj
 build/
+App/Assets.xcassets/
+__pycache__/
 DerivedData/
 
 # SwiftPM

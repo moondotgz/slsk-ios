@@ -29,9 +29,11 @@ jobs:
       - name: Install zlib headers
         run: |
           apt-get update -qq
-          apt-get install -y -qq zlib1g-dev git
+          apt-get install -y -qq zlib1g-dev git python3
       - name: Run tests
         run: swift test
+      - name: Test update-source generator
+        run: python3 -m unittest discover -s scripts/tests
 
   build-ipa:
     name: Build unsigned IPA
@@ -51,7 +53,9 @@ jobs:
           xcode-version: '27'
 
       - name: Generate Xcode project
-        run: xcodegen generate --spec project.yml
+        run: |
+          python3 scripts/prepare_icon.py
+          xcodegen generate --spec project.yml
 
       - name: Show build tools and schemes
         run: |
@@ -74,6 +78,8 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= \
             CODE_SIGN_ENTITLEMENTS= \
+            MARKETING_VERSION="1.0.${GITHUB_RUN_NUMBER}" \
+            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
             | tee build/xcodebuild.log
 
       - name: Package unsigned IPA
@@ -97,6 +103,7 @@ jobs:
 
       - name: Upload build diagnostics
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: Slsk-build-diagnostics
@@ -105,3 +112,60 @@ jobs:
             build/Slsk.xcresult
           if-no-files-found: ignore
           retention-days: 14
+
+  publish-source:
+    name: Publish release and update source
+    needs: build-ipa
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: slsk-pages
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: Slsk-unsigned-ipa
+          path: build
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+      - name: Generate update source
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          python3 scripts/publish_source.py \
+            --ipa build/Slsk-unsigned.ipa \
+            --icon assets/icon.png \
+            --repository "$REPOSITORY" \
+            --tag "build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}" \
+            --site-url "$SITE_URL" \
+            --output build/site
+      - name: Publish unsigned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "build-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}" \
+            build/Slsk-unsigned.ipa assets/icon.png \
+            --target "$GITHUB_SHA" \
+            --title "Slsk 1.0.${GITHUB_RUN_NUMBER}" \
+            --notes "Automated main build. Unsigned IPA; sign using Flarestore or another compatible installer."
+      - name: Upload Pages site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: build/site
+      - name: Deploy update source
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -149,6 +149,7 @@ swift test
 
 # iOS app (macOS only; CI does this)
 brew install xcodegen
+python3 scripts/prepare_icon.py
 xcodegen generate
 xcodebuild -project Slsk.xcodeproj -scheme Slsk \
   -destination 'generic/platform=iOS' archive \
@@ -180,8 +181,9 @@ new targets or build settings do), edit `project.yml`, never the generated
 
 ## Known gaps / future work
 
-- No app icon or asset catalog yet; CI builds are unsigned (sideloading tools
-  re-sign).
+- The app icon is generated from `assets/icon.png` by `scripts/prepare_icon.py`.
+  CI builds remain unsigned (sideloading tools re-sign). Successful main builds
+  publish release IPAs and a GitHub Pages AltStore-compatible update source.
 - iOS backgrounding: long transfers only progress while the app is
   foregrounded (no background audio/data entitlements are used). A background
   task (`beginBackgroundTask`) bridge could extend this.

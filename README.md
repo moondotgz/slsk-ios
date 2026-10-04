@@ -29,6 +29,31 @@ reverse engineering of the network.
 
 ## Getting the app
 
+### Flarestore / AltStore-compatible update source
+
+Add `https://moondotgz.github.io/slsk-ios/source.json` as a repository in
+Flarestore (or an installer supporting AltStore/SideStore sources). Once
+configured, refresh the source and install updates using your existing signing
+certificate. Keep the bundle ID `app.slsk.ios` and signing identity unchanged;
+install over the existing app instead of uninstalling it to retain settings
+and partial downloads.
+
+One-time repository setup: in **Settings → Pages → Build and deployment →
+Source**, select **GitHub Actions**. After a successful `main` build, CI
+publishes an unsigned IPA to a GitHub Release and deploys a small Pages site
+with `source.json`. Branch/PR builds only produce Actions artifacts. The
+public source requires publicly accessible release assets; it needs no
+signing credentials. Your `.p12`, its password, and provisioning profile stay
+in Flarestore, never in this repository or on Pages.
+
+Each CI build uses version `1.0.<workflow run number>`, matching the version
+inside the IPA so installers can detect updates. The icon comes from
+`assets/icon.png` and is included in both the app and the source. The generated
+asset catalog is ignored by Git. For local macOS builds, run
+`python3 scripts/prepare_icon.py` before `xcodegen generate`.
+
+The source format follows [AltStore's documentation](https://faq.altstore.io/developers/make-a-source).
+
 ### Interface and appearance
 
 The app uses native Liquid Glass navigation and controls on iOS 26 and
