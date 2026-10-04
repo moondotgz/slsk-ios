@@ -29,16 +29,16 @@ reverse engineering of the network.
 
 ## Getting the app
 
-### Liquid Glass branch
+### Interface and appearance
 
-`liquidglass` adds native Liquid Glass navigation and controls on iOS 26 and
+The app uses native Liquid Glass navigation and controls on iOS 26 and
 newer: floating search controls, chat composers, glass buttons and segmented
 panels over an adaptive orange/teal backdrop. File lists and messages stay
 readable. Older iOS versions use material fallbacks; Reduce Transparency and
 Increase Contrast use opaque control surfaces. iOS 16 remains supported.
 
-Select `liquidglass` when running Actions to build this interface. This branch
-uses GitHub's `xcode-27` runner (macOS 27 / Xcode 27, currently public preview).
+Build `main` when running Actions. CI uses GitHub's `xcode-27` runner
+(macOS 27 / Xcode 27, currently public preview).
 Local app builds need Xcode 26 or newer.
 
 In **Settings → Appearance**, use the color pickers to customize the accent
@@ -49,8 +49,8 @@ status colors remain unchanged.
 The repository has no committed Xcode project and releases are built in CI:
 
 1. Push this repository to GitHub, including `.github/workflows/build.yml`.
-2. Go to **Actions → Build → Run workflow**, select a branch, and run it.
-   Pushes to `main` or `liquidglass` and pull requests also trigger the workflow.
+2. Go to **Actions → Build → Run workflow**, select `main`, and run it.
+   Pushes to the configured branches and pull requests also trigger the workflow.
 3. Once the Linux tests and macOS build succeed, open the workflow run and
    download **`Slsk-unsigned-ipa`** from **Artifacts**. Extract the downloaded
    ZIP to get `Slsk-unsigned.ipa`.
@@ -80,9 +80,8 @@ the app remembers them via security-scoped bookmarks.
 See [AGENTS.md](AGENTS.md) for the full architecture, protocol notes and
 build instructions. Quick version:
 
-The [Liquid Glass protocol audit](docs/PROTOCOL_AUDIT.md) records fixed
-interoperability bugs, regression coverage, remaining gaps, and on-device
-checks required before merging.
+The [protocol audit](docs/PROTOCOL_AUDIT.md) records fixed interoperability
+bugs, regression coverage, remaining gaps, and on-device verification checks.
 
 - `swift test` — run the protocol/core test suite (works on Linux and macOS)
 - The IPA is built by GitHub Actions on macOS runners (XcodeGen + unsigned
