@@ -1,5 +1,5 @@
 # THIS IS VIBECODED SHITE!! I CANNOT CODE IN SWIFT DO NOT EXPECT THIS TO BE GOOD!!
-
+My cortisol was at its maximum due to no one having made an iOS soulseek client so i just quickly threw together this unstable client in a few hrs. 
 # Slsk — Soulseek for iOS
 
 A native iOS Soulseek client built with Swift/SwiftUI, implementing the
