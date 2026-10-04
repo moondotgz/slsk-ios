@@ -306,9 +306,11 @@ struct FolderRow: View {
 // MARK: - Transfer row
 
 struct TransferRow: View {
+    @EnvironmentObject private var client: SoulseekClient
     let item: TransferItem
 
     var body: some View {
+        let _ = client.transferRevision
         VStack(alignment: .leading, spacing: 4) {
             Text(item.fileName)
                 .font(.subheadline)
@@ -334,8 +336,14 @@ struct TransferRow: View {
             }
             .font(.caption)
 
-            if item.status == .transferring, item.size > 0 {
-                ProgressView(value: Double(item.currentOffset), total: Double(item.size))
+            if item.status != .transferring && item.status != .finished && item.currentOffset > 0 {
+                Text("\(Format.bytes(item.currentOffset)) / \(Format.bytes(item.size)) saved")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if item.size > 0 && item.status != .finished && (item.status == .transferring || item.currentOffset > 0) {
+                ProgressView(value: Double(min(item.currentOffset, item.size)), total: Double(item.size))
             }
         }
         .padding(.vertical, 2)

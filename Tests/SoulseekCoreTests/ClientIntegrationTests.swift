@@ -139,6 +139,29 @@ enum TestFrames {
 }
 
 final class ClientIntegrationTests: XCTestCase {
+    func testDownloadProgressPublishesEachChunkAndKeepsSavedBytesAfterFailure() throws {
+        let factory = MockTransportFactory()
+        let (client, server, directory) = makeClient(factory: factory)
+        defer { client.disconnect(); try? FileManager.default.removeItem(at: directory) }
+        login(client, server: server)
+        client.transfers.downloadDirectory = directory.appendingPathComponent("Downloads")
+        let item = try XCTUnwrap(client.transfers.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 1000)))
+        _ = client.transfers.handleTransferRequest(direction: TransferDirection.upload, token: 1,
+                                                   file: "song", fileSize: 1000, from: "peer")
+        client.transfers.handleDownloadConnectionOpened(connectionID: 999, username: "peer", token: 1)
+        let initialRevision = client.transferRevision
+        client.transfers.handleDownloadData(connectionID: 999, data: Data(repeating: 1, count: 140))
+        XCTAssertEqual(item.currentOffset, 140)
+        XCTAssertGreaterThan(client.transferRevision, initialRevision)
+        let firstChunkRevision = client.transferRevision
+        client.transfers.handleDownloadData(connectionID: 999, data: Data(repeating: 2, count: 300))
+        XCTAssertEqual(item.currentOffset, 440)
+        XCTAssertGreaterThan(client.transferRevision, firstChunkRevision)
+        client.transfers.handleDownloadConnectionClosed(connectionID: 999, error: SlskError.notConnected)
+        XCTAssertEqual(item.currentOffset, 440)
+        XCTAssertEqual(item.status, .failed("Connection closed"))
+    }
+
     func testRepeatedShortServerSessionsBackOffAndIgnoreOldSocketCallbacks() {
         let factory = MockTransportFactory()
         let (client, first, directory) = makeClient(factory: factory)
