@@ -223,6 +223,11 @@ public struct Recommendation: Identifiable, Equatable, Codable {
 
 // MARK: - User info response (from peers)
 
+public struct UserInterestsInfo: Equatable {
+    public let likes: [String]
+    public let hates: [String]
+}
+
 public struct PeerUserInfo: Equatable {
     public var description: String = ""
     public var picture: Data?

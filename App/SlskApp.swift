@@ -35,6 +35,8 @@ final class AppState: ObservableObject {
         self.client = client
         needsLogin = client.config.username.isEmpty
         client.start()
+        let sharedDirectories = ShareBookmarks.shared.resolveAll()
+        if !sharedDirectories.isEmpty { client.setSharedDirectories(sharedDirectories) }
     }
 
     func loggedIn() {

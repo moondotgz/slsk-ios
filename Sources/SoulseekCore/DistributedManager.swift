@@ -4,6 +4,7 @@ import Foundation
 /// relationships, branch level/root tracking and search forwarding, following
 /// Nicotine+'s algorithm.
 public final class DistributedManager {
+    public var localUsername = ""
     public private(set) var parentUsername: String?
     public private(set) var branchLevel: UInt32 = 0
     public private(set) var branchRoot: String?
@@ -15,8 +16,8 @@ public final class DistributedManager {
     public var uploadSpeed: UInt32 = 0
 
     public var maxChildren: Int {
-        guard parentSpeedRatio > 0 else { return 0 }
-        return Int(uploadSpeed / parentSpeedRatio)
+        guard parentSpeedRatio > 0, uploadSpeed >= parentMinSpeed else { return 0 }
+        return min(Int(uploadSpeed / parentSpeedRatio / 100), 10)
     }
 
     /// Search requests arriving from our parent / the server get forwarded raw
@@ -32,12 +33,14 @@ public final class DistributedManager {
     public func announceInitialState() {
         parentUsername = nil
         branchLevel = 0
-        branchRoot = nil
+        branchRoot = localUsername
+        candidateLevels.removeAll()
+        candidateRoots.removeAll()
         children.removeAll()
         parentCandidates.removeAll()
         onSendToServer?(ServerOut.haveNoParent(true))
         onSendToServer?(ServerOut.branchLevel(0))
-        onSendToServer?(ServerOut.branchRoot(branchRoot ?? ""))
+        onSendToServer?(ServerOut.branchRoot(localUsername))
         onBranchChanged?()
     }
 
@@ -61,7 +64,13 @@ public final class DistributedManager {
         var body = body
         switch code {
         case DistribCode.distribBranchLevel.rawValue:
-            guard let level = try? body.readInt32() else { return nil }
+            guard let level = try? body.readInt32(), level >= 0, level < Int32.max else { return nil }
+            if username == parentUsername {
+                branchLevel = UInt32(level + 1)
+                onSendToServer?(ServerOut.branchLevel(branchLevel))
+                pushBranchInfoToChildren()
+                onBranchChanged?()
+            }
             if isParentCandidate {
                 candidateLevels[username] = Int32(level)
             }
@@ -73,6 +82,12 @@ public final class DistributedManager {
 
         case DistribCode.distribBranchRoot.rawValue:
             guard let root = try? body.readString() else { return nil }
+            if username == parentUsername {
+                branchRoot = root
+                onSendToServer?(ServerOut.branchRoot(root))
+                pushBranchInfoToChildren()
+                onBranchChanged?()
+            }
             if isParentCandidate {
                 candidateRoots[username] = root
             }
@@ -103,6 +118,8 @@ public final class DistributedManager {
             adoptParent(username: username, level: level, root: root)
         }
 
+        guard username == "server" || username == parentUsername else { return nil }
+
         onDistributedSearch?(searcher, token, query, connectionID)
         // Forward the raw message (identifier included) to our children.
         return body.bytes
@@ -119,6 +136,7 @@ public final class DistributedManager {
         candidateRoots.removeAll()
         parentCandidates.removeAll()
 
+        onSendToServer?(ServerOut.haveNoParent(false))
         onSendToServer?(ServerOut.branchRoot(root))
         onSendToServer?(ServerOut.branchLevel(branchLevel))
         pushBranchInfoToChildren()
@@ -137,6 +155,18 @@ public final class DistributedManager {
 
     public func handleChildDisconnected(_ username: String) {
         children.remove(username)
+        candidateLevels[username] = nil
+        candidateRoots[username] = nil
+        if parentUsername == username {
+            parentUsername = nil
+            branchLevel = 0
+            branchRoot = localUsername
+            onSendToServer?(ServerOut.haveNoParent(true))
+            onSendToServer?(ServerOut.branchRoot(localUsername))
+            onSendToServer?(ServerOut.branchLevel(0))
+            pushBranchInfoToChildren()
+        }
+        onBranchChanged?()
     }
 
     public func pushBranchInfoToChildren() {
@@ -161,8 +191,12 @@ public final class DistributedManager {
     public func becomeBranchRoot() {
         parentUsername = nil
         branchLevel = 0
-        branchRoot = nil
+        branchRoot = localUsername
+        candidateLevels.removeAll()
+        candidateRoots.removeAll()
         onSendToServer?(ServerOut.branchLevel(0))
+        onSendToServer?(ServerOut.branchRoot(localUsername))
+        pushBranchInfoToChildren()
         onBranchChanged?()
     }
 }

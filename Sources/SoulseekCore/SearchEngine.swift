@@ -68,6 +68,9 @@ public final class SearchEngine {
     private let tokens = TokenGenerator()
     private var wishlistInterval: TimeInterval = 600
     private var wishlistTimer: Timer?
+    private var wishlistEnabled = false
+    private var wishlistCursor = 0
+    private var wishlistTokens: [String: UInt32] = [:]
 
     /// Called for every accepted result (already de-duplicated + filtered).
     public var onResultsChanged: ((SearchSession) -> Void)?
@@ -109,7 +112,7 @@ public final class SearchEngine {
         var buffer = body
         let remoteUsername = try buffer.readString()
         let token = try buffer.readUInt32()
-        guard let session = sessions[token], !isBanned(remoteUsername) else { return }
+        guard remoteUsername == username, let session = sessions[token], !isBanned(remoteUsername) else { return }
         let fileCount = try buffer.readUInt32()
         let files = try FileListCodec.parseFiles(count: fileCount, from: &buffer)
         let freeSlot = (try? buffer.readBool()) ?? false
@@ -136,16 +139,23 @@ public final class SearchEngine {
     // MARK: Wishlist
 
     public func wishlistItems() -> [String] {
-        wishlistTimer != nil ? savedWishlist : []
+        savedWishlist
     }
 
     private var savedWishlist: [String] = []
 
     public func setWishlist(_ items: [String]) {
-        savedWishlist = items
+        savedWishlist = Array(Set(items.filter { !SearchQuery($0).includedWords.isEmpty })).sorted()
+        for (item, token) in wishlistTokens where !savedWishlist.contains(item) {
+            sessions[token] = nil
+            wishlistTokens[item] = nil
+        }
+        wishlistCursor = 0
+        scheduleWishlist()
     }
 
     public func setWishlistInterval(_ seconds: UInt32) {
+        wishlistEnabled = seconds > 0
         wishlistInterval = max(60, TimeInterval(seconds))
         scheduleWishlist()
     }
@@ -158,15 +168,28 @@ public final class SearchEngine {
 
     private func scheduleWishlist() {
         wishlistTimer?.invalidate()
-        guard !savedWishlist.isEmpty else { return }
+        wishlistTimer = nil
+        guard wishlistEnabled, !savedWishlist.isEmpty else { return }
         let timer = Timer(fire: Date().addingTimeInterval(wishlistInterval), interval: wishlistInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
-            for item in self.savedWishlist {
-                let token = self.tokens.next()
-                self.wishlistHandler?(token, item)
-            }
+            self.performWishlistSearch()
         }
         RunLoop.main.add(timer, forMode: .default)
         wishlistTimer = timer
+    }
+
+    func performWishlistSearch() {
+        guard wishlistEnabled, !savedWishlist.isEmpty else { return }
+        let item = savedWishlist[wishlistCursor % savedWishlist.count]
+        wishlistCursor = (wishlistCursor + 1) % savedWishlist.count
+        let token: UInt32
+        if let existing = wishlistTokens[item], sessions[existing] != nil {
+            token = existing
+        } else {
+            guard let session = startSearch(item) else { return }
+            token = session.token
+            wishlistTokens[item] = token
+        }
+        wishlistHandler?(token, item)
     }
 }

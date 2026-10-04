@@ -3,6 +3,37 @@ import XCTest
 @testable import SoulseekCore
 
 final class PeerConnectionRegressionTests: XCTestCase {
+    func testIncomingIndirectPeerConnectionIsReusedForReplies() {
+        let factory = MockTransportFactory()
+        let manager = PeerConnectionManager(factory: factory)
+        manager.localUsername = "tester"
+        defer { manager.closeAll() }
+        manager.sendToPeer("peer", PeerOut.queueUpload("song"))
+        manager.handleIncomingIndirectInvitation(username: "peer", type: ConnectionType.peer,
+                                                host: "127.0.0.1", port: 5000, token: 1)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        manager.sendToPeer("peer", PeerOut.transferResponse(token: 2, allowed: true))
+        XCTAssertEqual(factory.peerStreams.count, 1)
+        XCTAssertEqual(factory.peerStreams[0].sentFrames.last, PeerOut.transferResponse(token: 2, allowed: true))
+    }
+
+    func testCantConnectResetsSessionSoRetryCanFallBackAgain() throws {
+        let factory = MockTransportFactory()
+        let manager = PeerConnectionManager(factory: factory)
+        manager.localUsername = "tester"
+        defer { manager.closeAll() }
+        var tokens: [UInt32] = []
+        manager.indirectRequestHandler = { _, _, token in tokens.append(token) }
+        manager.sendToPeer("peer", PeerOut.queueUpload("song"))
+        manager.setPeerAddress("peer", host: "127.0.0.1", port: 5000)
+        manager.byteStream(factory.peerStreams[0], didCloseWith: SlskError.notConnected)
+        manager.handleCantConnect(token: try XCTUnwrap(tokens.first))
+        manager.sendToPeer("peer", PeerOut.queueUpload("song"))
+        XCTAssertEqual(factory.peerStreams.count, 2)
+        manager.byteStream(factory.peerStreams[1], didCloseWith: SlskError.notConnected)
+        XCTAssertEqual(tokens.count, 2)
+    }
+
     func testFailedDirectPeerConnectionFallsBackAndFlushesPendingMessages() throws {
         let factory = MockTransportFactory()
         let manager = PeerConnectionManager(factory: factory)

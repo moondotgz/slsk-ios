@@ -37,7 +37,7 @@ public final class ChatManager {
 
     public func updateRoomList(_ summaries: [(name: String, count: UInt32)]) {
         for summary in summaries {
-            if let room = room(named: summary.name) {
+            if room(named: summary.name) != nil {
                 // Keep joined rooms; counts refreshed by RoomList messages.
                 continue
             }
@@ -53,6 +53,7 @@ public final class ChatManager {
         let target = joinedOrNewRoom(named: room)
         target.messages.append(ChatMessage(id: nextMessageID, username: username, text: text,
                                            timestamp: Date(), isSelf: isSelf))
+        nextMessageID += 1
         if target.messages.count > 500 {
             target.messages.removeFirst(target.messages.count - 500)
         }
@@ -95,6 +96,7 @@ public final class ChatManager {
         var thread = privateThreads[username] ?? []
         thread.append(ChatMessage(id: nextMessageID, username: username, text: text,
                                   timestamp: timestamp, isSelf: isSelf))
+        nextMessageID += 1
         if thread.count > 500 {
             thread.removeFirst(thread.count - 500)
         }
@@ -117,6 +119,7 @@ public final class ChatManager {
     public func addGlobalFeedMessage(room: String, username: String, text: String) {
         globalRoomMessages.append(ChatMessage(id: nextMessageID, username: "\(username) [\(room)]",
                                               text: text, timestamp: Date(), isSelf: false))
+        nextMessageID += 1
         if globalRoomMessages.count > 300 {
             globalRoomMessages.removeFirst(globalRoomMessages.count - 300)
         }
@@ -136,6 +139,21 @@ public final class ChatManager {
         if let threads = storage.load([String: [ChatMessage]].self, as: "private-chat") {
             privateThreads = threads
         }
+        let ids = rooms.flatMap { $0.messages.map(\.id) } + privateThreads.values.flatMap { $0.map(\.id) }
+        nextMessageID = max(nextMessageID, (ids.max() ?? 0) + 1)
+        var seen = Set<UInt64>()
+        func repairIDs(_ messages: [ChatMessage]) -> [ChatMessage] {
+            messages.map { message in
+                guard !seen.insert(message.id).inserted else { return message }
+                let repaired = ChatMessage(id: nextMessageID, username: message.username, text: message.text,
+                                           timestamp: message.timestamp, isSelf: message.isSelf)
+                nextMessageID += 1
+                seen.insert(repaired.id)
+                return repaired
+            }
+        }
+        for room in rooms { room.messages = repairIDs(room.messages) }
+        for (username, messages) in privateThreads { privateThreads[username] = repairIDs(messages) }
     }
 
     public func saveHistory(storage: Storage) {

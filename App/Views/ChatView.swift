@@ -323,8 +323,8 @@ struct GlobalFeedView: View {
                 MessageBubble(message: message)
             }
             HStack {
-                Button(client.chat.globalRoomMessages.isEmpty ? "Enable feed" : "Disable feed") {
-                    if client.chat.globalRoomMessages.isEmpty {
+                Button(client.isGlobalRoomFeedEnabled ? "Disable feed" : "Enable feed") {
+                    if !client.isGlobalRoomFeedEnabled {
                         client.joinGlobalRoomFeed()
                     } else {
                         client.leaveGlobalRoomFeed()

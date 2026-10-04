@@ -119,13 +119,17 @@ struct UserSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(info.description.isEmpty ? "No description" : info.description)
                                 .font(.footnote)
-                            if !info.interests.isEmpty {
-                                Text("Likes: " + info.interests.joined(separator: ", "))
+                        }
+                    }
+                    if let interests = client.userInterests[username] {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if !interests.likes.isEmpty {
+                                Text("Likes: " + interests.likes.joined(separator: ", "))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                            if !info.hates.isEmpty {
-                                Text("Dislikes: " + info.hates.joined(separator: ", "))
+                            if !interests.hates.isEmpty {
+                                Text("Dislikes: " + interests.hates.joined(separator: ", "))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }

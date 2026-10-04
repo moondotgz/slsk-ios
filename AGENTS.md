@@ -83,8 +83,9 @@ Key messages / flows (details in `docs/reference/nicotine-plus/slskmessages.py`)
 - **Search**: client → server FileSearch(26: token, query). Requests arrive as
   FileSearch (username, token, query — username FIRST) or DistribSearch
   (u32 identifier==49, username, token, query). Responses are **zlib-compressed**
-  FileSearchResponse (peer code 9) sent on the connection the request came in
-  on ('P' for server searches, the 'D' connection for distributed).
+  FileSearchResponse (peer code 9) sent directly to the searching username
+  on a 'P' connection, including when the request arrived via 'D'. Never
+  return peer-framed results over a distributed connection.
 - **Downloads**: QueueUpload(43) on a 'P' conn → uploader sends
   TransferRequest(40, direction=1, token, file, size) → downloader answers
   TransferResponse(41, allowed) → uploader opens 'F' conn (direct, falling

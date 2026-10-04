@@ -73,6 +73,10 @@ the app remembers them via security-scoped bookmarks.
 See [AGENTS.md](AGENTS.md) for the full architecture, protocol notes and
 build instructions. Quick version:
 
+The [Liquid Glass protocol audit](docs/PROTOCOL_AUDIT.md) records fixed
+interoperability bugs, regression coverage, remaining gaps, and on-device
+checks required before merging.
+
 - `swift test` — run the protocol/core test suite (works on Linux and macOS)
 - The IPA is built by GitHub Actions on macOS runners (XcodeGen + unsigned
   archive); there is nothing to build locally on non-macOS machines.

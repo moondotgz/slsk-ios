@@ -65,6 +65,7 @@ public final class PeerConnectionManager: PeerGateway {
         var username: String
         var address: (host: String, port: UInt16)?
         var addressRequested = false
+        var addressTimer: Timer?
         var connection: PeerConnection?
         var pendingMessages: [Data] = []
         var isConnecting = false
@@ -98,6 +99,7 @@ public final class PeerConnectionManager: PeerGateway {
         var isOpen = false
         var uploadToken: UInt32?
         var connectTimer: Timer?
+        var isDistributedChild = false
 
         init(id: UInt64, stream: any ByteStream, kind: String) {
             self.id = id
@@ -151,6 +153,8 @@ public final class PeerConnectionManager: PeerGateway {
         let session = session(for: username)
         session.address = port > 0 ? (host, port) : nil
         session.addressRequested = false
+        session.addressTimer?.invalidate()
+        session.addressTimer = nil
 
         if session.address != nil {
             attemptDirectConnection(session)
@@ -175,11 +179,21 @@ public final class PeerConnectionManager: PeerGateway {
 
         session.pendingMessages.append(data)
         guard !session.isConnecting else { return }
+        session.usedIndirect = false
 
         if session.address != nil {
             attemptDirectConnection(session)
         } else if !session.addressRequested {
             session.addressRequested = true
+            let timer = Timer(fire: Date().addingTimeInterval(10), interval: 10, repeats: false) { [weak self, weak session] _ in
+                guard let self, let session, session.addressRequested else { return }
+                session.addressRequested = false
+                session.addressTimer = nil
+                session.pendingMessages.removeAll()
+                self.delegate?.peerManager(self, didFailPeerConnection: username)
+            }
+            session.addressTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
             requestPeerAddress(username)
         }
     }
@@ -268,15 +282,14 @@ public final class PeerConnectionManager: PeerGateway {
 
     // MARK: - Distributed
 
-    /// Send data on one specific connection (used to answer distributed
-    /// searches on the 'D' connection they arrived on).
+    /// Send distributed branch metadata on one specific connection.
     public func sendDirect(_ connectionID: UInt64, _ data: Data) {
         connections[connectionID]?.stream.send(data)
     }
 
     public func sendToDistributedChildren(_ data: Data) {
         for connection in connections.values
-        where connection.kind == ConnectionType.distributed && connection.isOpen {
+        where connection.kind == ConnectionType.distributed && connection.isDistributedChild && connection.isOpen {
             connection.stream.send(data)
         }
     }
@@ -300,7 +313,16 @@ public final class PeerConnectionManager: PeerGateway {
         }
     }
 
+    public func selectDistributedParent(_ username: String) {
+        for connection in connections.values where connection.kind == ConnectionType.distributed
+            && !connection.isDistributedChild && connection.username != username {
+            connections[connection.id] = nil
+            connection.stream.close()
+        }
+    }
+
     public func closeAll() {
+        for session in sessions.values { session.addressTimer?.invalidate() }
         for connection in connections.values {
             connection.connectTimer?.invalidate()
             connection.stream.close()
@@ -345,6 +367,12 @@ public final class PeerConnectionManager: PeerGateway {
             connection.username = username
             connections[connection.id] = connection
             connection.stream.delegate = self
+            if type == ConnectionType.peer {
+                let session = session(for: username)
+                if let previous = session.connection { abandon(connection: previous, session: session) }
+                session.connection = connection
+                session.isConnecting = true
+            }
             connection.stream.start(host: host, port: port,
                                     initialBytes: PeerInitOut.pierceFirewall(token: token))
         default:
@@ -353,9 +381,15 @@ public final class PeerConnectionManager: PeerGateway {
     }
 
     public func handleCantConnect(token: UInt32) {
-        pierceTokens[token] = nil
+        let invitation = pierceTokens.removeValue(forKey: token)
         indirectTimers[token]?.invalidate()
         indirectTimers[token] = nil
+        if let invitation, invitation.kind == ConnectionType.peer,
+           let session = sessions[invitation.username] {
+            session.isConnecting = false
+            session.pendingMessages.removeAll()
+            delegate?.peerManager(self, didFailPeerConnection: invitation.username)
+        }
     }
 
     // MARK: - Session plumbing
@@ -503,11 +537,7 @@ public final class PeerConnectionManager: PeerGateway {
             switch entry.kind {
             case ConnectionType.peer:
                 let session = session(for: entry.username)
-                session.isConnecting = false
-                if session.connection == nil {
-                    session.connection = connection
-                }
-                sendPendingMessages(connection, session: session)
+                bindPeerConnection(connection, session: session)
             case ConnectionType.file:
                 // The downloader pierced through to us: we are the uploader.
                 connection.fileState = .awaitingOffset
@@ -529,18 +559,14 @@ public final class PeerConnectionManager: PeerGateway {
                 // Bind the accepted connection to the session so replies
                 // reuse it instead of dialing out again.
                 let session = session(for: username)
-                session.isConnecting = false
-                session.usedIndirect = false
-                if session.connection == nil {
-                    session.connection = connection
-                }
-                sendPendingMessages(connection, session: session)
+                bindPeerConnection(connection, session: session)
             case ConnectionType.file:
                 // An uploader connected to us directly: they will send the
                 // raw token next; we are the downloader.
                 connection.fileState = .awaitingToken
             case ConnectionType.distributed:
                 // A child connected to us in the distributed tree.
+                connection.isDistributedChild = true
                 if let username = connection.username {
                     delegate?.peerManager(self, didAcceptChildConnection: connection.id, username: username)
                 }
@@ -552,6 +578,24 @@ public final class PeerConnectionManager: PeerGateway {
             connections[connection.id] = nil
             connection.stream.close()
         }
+    }
+
+    private func bindPeerConnection(_ connection: PeerConnection, session: PeerSession) {
+        if let previous = session.connection, previous !== connection {
+            abandon(connection: previous, session: session)
+        }
+        session.connection = connection
+        session.isConnecting = false
+        session.usedIndirect = false
+        session.addressRequested = false
+        session.addressTimer?.invalidate()
+        session.addressTimer = nil
+        for (token, invitation) in pierceTokens where invitation.username == session.username
+            && invitation.kind == ConnectionType.peer {
+            pierceTokens[token] = nil
+            indirectTimers.removeValue(forKey: token)?.invalidate()
+        }
+        sendPendingMessages(connection, session: session)
     }
 
     private func sendPendingMessages(_ connection: PeerConnection, session: PeerSession) {
@@ -631,9 +675,7 @@ extension PeerConnectionManager: ByteStreamDelegate {
 
         if connection.kind == ConnectionType.peer, let username = connection.username,
            let session = sessions[username] {
-            session.isConnecting = false
-            session.usedIndirect = false
-            sendPendingMessages(connection, session: session)
+            bindPeerConnection(connection, session: session)
         }
     }
 

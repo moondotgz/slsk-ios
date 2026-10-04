@@ -50,11 +50,7 @@ public final class Storage {
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .secondsSince1970
         guard let data = try? encoder.encode(value) else { return }
-        let target = url(for: name)
-        let temp = target.deletingPathExtension().appendingPathExtension("tmp")
-        try? data.write(to: temp, options: .atomic)
-        try? FileManager.default.removeItem(at: target)
-        try? FileManager.default.moveItem(at: temp, to: target)
+        try? data.write(to: url(for: name), options: .atomic)
     }
 
     public func load<T: Decodable>(_ type: T.Type, as name: String) -> T? {
