@@ -56,13 +56,20 @@ The repository has no committed Xcode project and releases are built in CI:
    ZIP to get `Slsk-unsigned.ipa`.
 4. Sideload the IPA with [Sideloadly](https://sideloadly.io/),
    [AltStore](https://altstore.io/) (free Apple ID, 7-day resigning) or
-   [TrollStore](https://github.com/opa334/TrollStore) (unsigned IPA installs
-   directly on supported firmwares).
+   [SideStore](https://github.com/SideStore/SideStore),
+   [LiveContainer](https://github.com/LiveContainer/LiveContainer), or
+   [TrollStore](https://github.com/opa334/TrollStore) (which installs unsigned
+   IPAs directly on supported firmware).
 
 The build requires no Apple Developer certificates or GitHub secrets. The IPA
-is unsigned; your sideloading tool handles signing. IPA artifacts are kept for
-30 days. If the archive fails, download **`Slsk-build-diagnostics`** for the
-Xcode log and result bundle (kept for 14 days).
+is unsigned; your sideloading tool handles signing. You can also sign it with
+a paid Apple Developer membership and its development certificate and
+provisioning profile, or with an appropriate paid distribution-signing service
+and certificate. Certificate type, device eligibility, provisioning, and
+renewal requirements vary; check the provider's current terms. IPA artifacts
+are kept for 30 days. If the archive fails, download
+**`Slsk-build-diagnostics`** for the Xcode log and result bundle (kept for 14
+days).
 
 Downloads are stored in the app's Documents folder (visible in the Files app
 under *On My iPhone → Slsk*). Shared folders are picked from the Files app;
