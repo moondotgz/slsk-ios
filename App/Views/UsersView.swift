@@ -55,7 +55,7 @@ struct UsersView: View {
                 }
             }
             .navigationTitle("Users")
-            .sheet(item: $selectedUserBinding) { username in
+            .sheet(item: selectedUserBinding) { username in
                 UserSheet(username: username)
             }
         }

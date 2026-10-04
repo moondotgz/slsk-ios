@@ -122,6 +122,10 @@ public final class ChatManager {
         }
     }
 
+    public func clearGlobalRoomMessages() {
+        globalRoomMessages.removeAll()
+    }
+
     public func loadHistory(storage: Storage) {
         if let savedRooms = storage.load([Room].self, as: "rooms") {
             for room in savedRooms where room.joined {

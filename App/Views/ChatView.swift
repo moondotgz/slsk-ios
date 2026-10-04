@@ -324,7 +324,6 @@ struct GlobalFeedView: View {
                         client.joinGlobalRoomFeed()
                     } else {
                         client.leaveGlobalRoomFeed()
-                        client.chat.globalRoomMessages.removeAll()
                     }
                 }
                 .buttonStyle(.bordered)

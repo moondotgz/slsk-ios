@@ -1082,6 +1082,8 @@ public final class SoulseekClient: ObservableObject {
 
     public func leaveGlobalRoomFeed() {
         send(ServerOut.leaveGlobalRoom())
+        chat.clearGlobalRoomMessages()
+        chatRevision += 1
     }
 
     public func changePassword(_ password: String) {
