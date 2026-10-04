@@ -90,10 +90,11 @@ public final class TransferManager {
         }
     }
 
-    private func enqueueDownload(_ item: DownloadItem) {
-        onDiagnostic?("Download queued: peer=\(item.username), id=\(item.id)")
+    private func enqueueDownload(_ item: DownloadItem, recovering: Bool = false) {
+        onDiagnostic?("Download \(recovering ? "recovering" : "queued"): peer=\(item.username), id=\(item.id), lastQueue=\(item.queuePosition)")
         item.status = .queued
-        item.queuePosition = 0
+        item.queuePositionIsStale = recovering && item.queuePosition > 0
+        if !recovering { item.queuePosition = 0 }
         startTimeout(for: item)
         gateway?.sendToPeer(item.username, PeerOut.queueUpload(item.virtualPath))
         if item.status == .queued {
@@ -145,7 +146,9 @@ public final class TransferManager {
         timeoutTimers[item.id]?.invalidate()
         timeoutTimers[item.id] = nil
         item.queuePosition = place
+        item.queuePositionIsStale = false
         item.status = .remotelyQueued
+        onDiagnostic?("Queue confirmed: peer=\(username), id=\(item.id), position=\(place)")
         notifyChanged()
     }
 
@@ -192,6 +195,7 @@ public final class TransferManager {
             }
             item.status = .connecting
             item.queuePosition = 0
+            item.queuePositionIsStale = false
             activeDownloads[key] = item
             onDiagnostic?("Accepted upload offer: peer=\(username), token=\(token), id=\(item.id), size=\(item.size)")
             startTimeout(for: item)
@@ -311,7 +315,7 @@ public final class TransferManager {
 
     public func handleUserOnline(_ username: String) {
         for item in downloads where item.username == username && item.status == .userOffline {
-            enqueueDownload(item)
+            enqueueDownload(item, recovering: true)
         }
     }
 
@@ -715,6 +719,7 @@ public final class TransferManager {
     public func serverWentOffline() {
         for item in downloads where item.status.isActive {
             deactivateDownload(item)
+            item.queuePositionIsStale = item.queuePosition > 0
             item.status = .userOffline
         }
         for (connectionID, entry) in uploadConnections {

@@ -89,6 +89,7 @@ open class TransferItem: Identifiable, Codable {
     public var currentOffset: UInt64 = 0
     public var speed: Double = 0
     public var queuePosition: UInt32 = 0
+    public var queuePositionIsStale = false
     public var startedAt: Date?
 
     init(username: String, virtualPath: String, size: UInt64, bitrate: UInt32? = nil) {
@@ -145,6 +146,7 @@ open class TransferItem: Identifiable, Codable {
         status = try container.decodeIfPresent(TransferStatus.self, forKey: .status) ?? .queued
         currentOffset = try container.decodeIfPresent(UInt64.self, forKey: .currentOffset) ?? 0
         queuePosition = try container.decodeIfPresent(UInt32.self, forKey: .queuePosition) ?? 0
+        queuePositionIsStale = queuePosition > 0
     }
 }
 

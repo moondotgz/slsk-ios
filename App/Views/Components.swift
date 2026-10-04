@@ -323,8 +323,10 @@ struct TransferRow: View {
                     }
                 } else if item.status == .finished {
                     Text(Format.bytes(item.size))
-                } else if item.queuePosition > 0 {
-                    Text("Queue #\(item.queuePosition)")
+                } else if item.queuePosition > 0 && (item.status == .queued || item.status == .remotelyQueued || item.status == .userOffline) {
+                    Text(item.queuePositionIsStale
+                         ? "Rechecking · last queue #\(item.queuePosition)"
+                         : "Queue #\(item.queuePosition)")
                 } else {
                     Text(item.status.label)
                         .foregroundStyle(item.status == .finished ? .green : .secondary)

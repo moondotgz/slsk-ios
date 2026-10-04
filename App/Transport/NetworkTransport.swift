@@ -11,6 +11,8 @@ final class TCPStream: ByteStream {
     private var connection: NWConnection?
     private var initialBytes: Data?
     private let queue: DispatchQueue
+    private let keepAlive: Bool
+    private var didOpen = false
     private static let idLock = NSLock()
     private static var nextID: UInt64 = 0
 
@@ -22,14 +24,16 @@ final class TCPStream: ByteStream {
     }
 
     /// Fresh outbound connection.
-    init(queue: DispatchQueue? = nil) {
+    init(queue: DispatchQueue? = nil, keepAlive: Bool = false) {
         identifier = TCPStream.allocateID()
+        self.keepAlive = keepAlive
         self.queue = queue ?? DispatchQueue(label: "slsk.stream.\(identifier)")
     }
 
     /// Already-connected socket (accepted by TCPListener).
     init(preConnected connection: NWConnection) {
         identifier = TCPStream.allocateID()
+        keepAlive = false
         queue = DispatchQueue(label: "slsk.stream.\(identifier)")
         self.connection = connection
     }
@@ -45,6 +49,12 @@ final class TCPStream: ByteStream {
 
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
+        if keepAlive, let tcp = params.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcp.enableKeepalive = true
+            tcp.keepaliveIdle = 15
+            tcp.keepaliveInterval = 5
+            tcp.keepaliveCount = 4
+        }
         let endpoint = NWEndpoint.Host(host)
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
         let newConnection = NWConnection(host: endpoint, port: nwPort, using: params)
@@ -53,22 +63,32 @@ final class TCPStream: ByteStream {
 
     private func attach(_ connection: NWConnection) {
         self.connection = connection
-        connection.stateUpdateHandler = { [weak self] state in
+        connection.pathUpdateHandler = { [weak self, weak connection] path in
+            let description = "status=\(path.status), cellular=\(path.usesInterfaceType(.cellular)), wifi=\(path.usesInterfaceType(.wifi)), expensive=\(path.isExpensive)"
+            DispatchQueue.main.async {
+                guard let self, let connection, self.connection === connection else { return }
+                self.delegate?.byteStream(self, didUpdateNetworkPath: description)
+            }
+        }
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
             guard let self else { return }
             DispatchQueue.main.async {
+                guard let connection, self.connection === connection else { return }
                 switch state {
                 case .ready:
+                    guard !self.didOpen else { return }
+                    self.didOpen = true
                     if let initialBytes = self.initialBytes {
                         self.initialBytes = nil
                         self.send(initialBytes)
                     }
                     self.delegate?.byteStreamDidOpen(self)
                 case .failed(let error):
-                    self.delegate?.byteStream(self, didCloseWith: error)
+                    self.finish(error: error)
                 case .waiting(let error):
                     self.delegate?.byteStream(self, isWaitingWith: error)
                 case .cancelled:
-                    self.delegate?.byteStream(self, didCloseWith: nil)
+                    self.finish(error: nil)
                 default:
                     break
                 }
@@ -98,20 +118,37 @@ final class TCPStream: ByteStream {
     }
 
     func close() {
-        connection?.cancel()
-        connection = nil
+        guard let connection else { return }
+        self.connection = nil
+        connection.stateUpdateHandler = nil
+        connection.pathUpdateHandler = nil
+        connection.cancel()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.delegate?.byteStream(self, didCloseWith: nil)
+        }
+    }
+
+    private func finish(error: (any Error)?) {
+        guard let connection else { return }
+        self.connection = nil
+        connection.stateUpdateHandler = nil
+        connection.pathUpdateHandler = nil
+        connection.cancel()
+        delegate?.byteStream(self, didCloseWith: error)
     }
 
     private func receiveNext() {
-        connection?.receive(minimumIncompleteLength: 1, maximumLength: 512 * 1024) { [weak self] data, _, isComplete, error in
+        guard let connection else { return }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 512 * 1024) { [weak self, weak connection] data, _, isComplete, error in
             guard let self else { return }
             DispatchQueue.main.async {
+                guard let connection, self.connection === connection else { return }
                 if let data, !data.isEmpty {
                     self.delegate?.byteStream(self, didReceive: data)
                 }
                 if isComplete || error != nil {
-                    self.delegate?.byteStream(self, didCloseWith: error)
-                    self.connection = nil
+                    self.finish(error: error)
                 } else {
                     self.receiveNext()
                 }
@@ -198,7 +235,7 @@ final class TCPListener: ListenerService {
 
 final class TCPTransportFactory: TransportFactory {
     func makeServerStream() -> any ByteStream {
-        TCPStream()
+        TCPStream(keepAlive: true)
     }
 
     func makePeerStream() -> any ByteStream {

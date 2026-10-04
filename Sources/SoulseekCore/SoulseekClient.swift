@@ -61,6 +61,7 @@ public final class SoulseekClient: ObservableObject {
     private var reconnectAttempts = 0
     private var reconnectTimer: Timer?
     private var pingTimer: Timer?
+    private var serverLoginDate: Date?
     private var pendingIndirectTokens: [UInt32: String] = [:] // token → username
     private var browseSessions: [String: BrowseSession] = [:]
     private var folderContentsHandlers: [UInt32: ([String: [RemoteFileInfo]]) -> Void] = [:]
@@ -107,6 +108,8 @@ public final class SoulseekClient: ObservableObject {
 
     public func disconnect() {
         recordConnectionDiagnostic("Disconnect requested")
+        serverLoginDate = nil
+        reconnectAttempts = 0
         reconnectTimer?.invalidate()
         reconnectTimer = nil
         pingTimer?.invalidate()
@@ -244,8 +247,13 @@ public final class SoulseekClient: ObservableObject {
     }
 
     private func handleServerClosed(_ error: (any Error)?) {
-        recordConnectionDiagnostic("Server socket closed: \(error.map { String(describing: $0) } ?? "EOF")")
+        let uptime = serverLoginDate.map { Int(Date().timeIntervalSince($0)) } ?? 0
+        recordConnectionDiagnostic("Server socket closed: \(error.map { String(describing: $0) } ?? "EOF"), sessionSeconds=\(uptime), activePeers=\(peerManager.activeConnectionCount)")
+        if uptime >= 300 { reconnectAttempts = 0 }
+        serverLoginDate = nil
+        let closedStream = serverStream
         serverStream = nil
+        closedStream?.close()
         pingTimer?.invalidate()
         pingTimer = nil
         serverAssembler.reset()
@@ -261,15 +269,16 @@ public final class SoulseekClient: ObservableObject {
             scheduleReconnect()
         } else if connectionState == .connecting || connectionState == .loggingIn {
             connectionState = .failed("Could not reach server")
+            if reconnectAttempts > 0 { scheduleReconnect() }
         }
     }
 
     private func scheduleReconnect() {
         reconnectAttempts += 1
         let delay = min(300, TimeInterval(10 * reconnectAttempts))
+        recordConnectionDiagnostic("Server reconnect scheduled: attempt=\(reconnectAttempts), delay=\(Int(delay))s")
         let timer = Timer(fire: Date().addingTimeInterval(delay), interval: delay, repeats: false) { [weak self] _ in
             guard let self, !self.isLoggedIn else { return }
-            self.reconnectAttempts = 0
             self.connect()
         }
         RunLoop.main.add(timer, forMode: .default)
@@ -596,7 +605,8 @@ public final class SoulseekClient: ObservableObject {
         peerManager.localUsername = config.username
         distributed.localUsername = config.username
         serverBanner = banner
-        reconnectAttempts = 0
+        serverLoginDate = Date()
+        recordConnectionDiagnostic("Server login accepted")
 
         // Post-login sequence (mirrors Nicotine+).
         peerManager.startListening(port: config.listenPort)
@@ -893,7 +903,7 @@ public final class SoulseekClient: ObservableObject {
             guard let self, self.isLoggedIn else { return }
             self.send(ServerOut.serverPing())
         }
-        RunLoop.main.add(timer, forMode: .default)
+        RunLoop.main.add(timer, forMode: .common)
         pingTimer = timer
     }
 
@@ -1196,6 +1206,10 @@ public final class SoulseekClient: ObservableObject {
 // MARK: - ByteStreamDelegate (server)
 
 extension SoulseekClient: ByteStreamDelegate {
+    public func byteStream(_ stream: any ByteStream, didUpdateNetworkPath description: String) {
+        guard stream === serverStream else { return }
+        recordConnectionDiagnostic("Server network path: \(description)")
+    }
     public func byteStream(_ stream: any ByteStream, isWaitingWith error: any Error) {
         guard stream === serverStream else { return }
         recordConnectionDiagnostic("Server socket waiting: \(error)")
