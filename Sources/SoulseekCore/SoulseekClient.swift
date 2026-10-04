@@ -38,6 +38,7 @@ public final class SoulseekClient: ObservableObject {
     @Published public private(set) var itemRecommendations: [Recommendation] = []
     @Published public private(set) var itemSimilarUsers: [String] = []
     @Published public private(set) var listenPort: UInt16 = 0
+    @Published public private(set) var connectionDiagnostics: [String] = []
 
     // MARK: Services
 
@@ -87,6 +88,7 @@ public final class SoulseekClient: ObservableObject {
 
     public func connect() {
         guard serverStream == nil else { return }
+        recordConnectionDiagnostic("Connecting to server \(config.serverHost):\(config.serverPort)")
         reconnectTimer?.invalidate()
         reconnectTimer = nil
         connectionState = .connecting
@@ -104,6 +106,7 @@ public final class SoulseekClient: ObservableObject {
     }
 
     public func disconnect() {
+        recordConnectionDiagnostic("Disconnect requested")
         reconnectTimer?.invalidate()
         reconnectTimer = nil
         pingTimer?.invalidate()
@@ -147,6 +150,8 @@ public final class SoulseekClient: ObservableObject {
     // MARK: - Service wiring
 
     private func wireServices() {
+        peerManager.onDiagnostic = { [weak self] in self?.recordConnectionDiagnostic($0) }
+        transfers.onDiagnostic = { [weak self] in self?.recordConnectionDiagnostic($0) }
         // Peer manager
         peerManager.delegate = self
         peerManager.addressRequestHandler = { [weak self] username in
@@ -161,10 +166,12 @@ public final class SoulseekClient: ObservableObject {
         }
         peerManager.portChangedHandler = { [weak self] port in
             guard let self, self.isLoggedIn else { return }
+            self.recordConnectionDiagnostic("Listener bound on port \(port)")
             self.listenPort = port
             self.send(ServerOut.setWaitPort(UInt32(port)))
         }
-        peerManager.listenErrorHandler = { [weak self] _ in
+        peerManager.listenErrorHandler = { [weak self] error in
+            self?.recordConnectionDiagnostic("Listener failed: \(error)")
             self?.listenPort = 0
         }
 
@@ -208,6 +215,18 @@ public final class SoulseekClient: ObservableObject {
         }
     }
 
+    public func clearConnectionDiagnostics() {
+        connectionDiagnostics.removeAll()
+    }
+
+    private func recordConnectionDiagnostic(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        connectionDiagnostics.append("\(timestamp) \(message)")
+        if connectionDiagnostics.count > 200 {
+            connectionDiagnostics.removeFirst(connectionDiagnostics.count - 200)
+        }
+    }
+
     // MARK: - Sending
 
     private func send(_ data: Data) {
@@ -219,11 +238,13 @@ public final class SoulseekClient: ObservableObject {
     // MARK: - Server stream events
 
     private func handleServerOpen() {
+        recordConnectionDiagnostic("Server socket ready; logging in")
         connectionState = .loggingIn
         send(ServerOut.login(username: config.username, password: config.password))
     }
 
     private func handleServerClosed(_ error: (any Error)?) {
+        recordConnectionDiagnostic("Server socket closed: \(error.map { String(describing: $0) } ?? "EOF")")
         serverStream = nil
         pingTimer?.invalidate()
         pingTimer = nil
@@ -1175,6 +1196,11 @@ public final class SoulseekClient: ObservableObject {
 // MARK: - ByteStreamDelegate (server)
 
 extension SoulseekClient: ByteStreamDelegate {
+    public func byteStream(_ stream: any ByteStream, isWaitingWith error: any Error) {
+        guard stream === serverStream else { return }
+        recordConnectionDiagnostic("Server socket waiting: \(error)")
+    }
+
     public func byteStreamDidOpen(_ stream: any ByteStream) {
         if stream === serverStream {
             handleServerOpen()
@@ -1190,6 +1216,7 @@ extension SoulseekClient: ByteStreamDelegate {
                 guard stream === serverStream else { return }
             }
         } catch {
+            recordConnectionDiagnostic("Server framing error: \(error)")
             disconnect()
         }
     }

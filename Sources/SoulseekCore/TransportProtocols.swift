@@ -22,6 +22,11 @@ public protocol ByteStreamDelegate: AnyObject {
     func byteStreamDidOpen(_ stream: any ByteStream)
     func byteStream(_ stream: any ByteStream, didReceive data: Data)
     func byteStream(_ stream: any ByteStream, didCloseWith error: (any Error)?)
+    func byteStream(_ stream: any ByteStream, isWaitingWith error: any Error)
+}
+
+public extension ByteStreamDelegate {
+    func byteStream(_ stream: any ByteStream, isWaitingWith error: any Error) {}
 }
 
 /// TCP listener for incoming peer connections. Binding completes

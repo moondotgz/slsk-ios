@@ -54,6 +54,7 @@ public final class PeerConnectionManager: PeerGateway {
     public var indirectRequestHandler: ((_ username: String, _ type: String, _ token: UInt32) -> Void)?
     public var cantConnectHandler: ((_ token: UInt32, _ username: String) -> Void)?
     public var listenErrorHandler: ((any Error) -> Void)?
+    public var onDiagnostic: ((String) -> Void)?
 
     public let factory: any TransportFactory
     public let listener: any ListenerService
@@ -239,6 +240,7 @@ public final class PeerConnectionManager: PeerGateway {
     /// Called when the server relays a ConnectToPeer('F') from the uploader.
     public func openDownloadConnection(username: String, host: String, port: UInt16, token: UInt32) {
         let connection = makeFileConnection(username: username)
+        onDiagnostic?("Reverse file invitation: socket=\(connection.id), peer=\(username), endpoint=\(host):\(port), pierceToken=\(token)")
         connection.fileState = .awaitingToken
         connection.stream.start(host: host, port: port,
                                 initialBytes: PeerInitOut.pierceFirewall(token: token))
@@ -274,6 +276,7 @@ public final class PeerConnectionManager: PeerGateway {
 
     public func closeFileConnection(_ connectionID: UInt64) {
         if let connection = connections[connectionID] {
+            onDiagnostic?("Closing file socket \(connectionID): peer=\(connection.username ?? "unknown"), state=\(String(describing: connection.fileState))")
             connections[connectionID] = nil
             connection.connectTimer?.invalidate()
             connection.stream.close()
@@ -523,6 +526,7 @@ public final class PeerConnectionManager: PeerGateway {
         case PeerInitCode.pierceFirewall.rawValue:
             let token = (try? buffer.readUInt32()) ?? 0
             guard let entry = pierceTokens[token] else {
+                onDiagnostic?("Rejected PierceFirewall: socket=\(connection.id), unknown or expired pierceToken=\(token)")
                 // Unknown/stale pierce token: refuse the connection.
                 connections[connection.id] = nil
                 connection.stream.close()
@@ -533,6 +537,7 @@ public final class PeerConnectionManager: PeerGateway {
             indirectTimers[token] = nil
             connection.kind = entry.kind
             connection.username = entry.username
+            onDiagnostic?("Accepted PierceFirewall: socket=\(connection.id), peer=\(entry.username), type=\(entry.kind), pierceToken=\(token)")
 
             switch entry.kind {
             case ConnectionType.peer:
@@ -553,6 +558,7 @@ public final class PeerConnectionManager: PeerGateway {
             let type = (try? buffer.readString()) ?? ConnectionType.peer
             connection.kind = type
             connection.username = username
+            onDiagnostic?("Incoming PeerInit: socket=\(connection.id), peer=\(username), type=\(type)")
 
             switch type {
             case ConnectionType.peer:
@@ -630,6 +636,7 @@ public final class PeerConnectionManager: PeerGateway {
             guard let tokenData = takeBytes(4) else { return }
             var b = MessageBuffer(tokenData)
             let token = (try? b.readUInt32()) ?? 0
+            onDiagnostic?("FileTransferInit: socket=\(connection.id), peer=\(connection.username ?? "unknown"), token=\(token)")
             state = .receivingData
             connection.fileState = state
             if let username = connection.username {
@@ -664,9 +671,15 @@ public final class PeerConnectionManager: PeerGateway {
 }
 
 extension PeerConnectionManager: ByteStreamDelegate {
+    public func byteStream(_ stream: any ByteStream, isWaitingWith error: any Error) {
+        guard let connection = connections.values.first(where: { $0.stream === stream }) else { return }
+        onDiagnostic?("Socket \(connection.id) waiting: peer=\(connection.username ?? "unknown"), type=\(connection.kind), error=\(error.localizedDescription)")
+    }
+
     public func byteStreamDidOpen(_ stream: any ByteStream) {
         guard let connection = connections.values.first(where: { $0.stream === stream }) else { return }
         connection.isOpen = true
+        onDiagnostic?("Socket \(connection.id) ready: peer=\(connection.username ?? "unknown"), type=\(connection.kind)")
         connection.connectTimer?.invalidate()
         if connection.kind == ConnectionType.file, let token = connection.uploadToken,
            let username = connection.username {
@@ -699,6 +712,7 @@ extension PeerConnectionManager: ByteStreamDelegate {
                 }
             }
         } catch {
+            onDiagnostic?("Socket \(connection.id) framing error: \(error.localizedDescription)")
             connections[connection.id] = nil
             stream.close()
         }
@@ -706,6 +720,7 @@ extension PeerConnectionManager: ByteStreamDelegate {
 
     public func byteStream(_ stream: any ByteStream, didCloseWith error: (any Error)?) {
         guard let connection = connections.values.first(where: { $0.stream === stream }) else { return }
+        onDiagnostic?("Socket \(connection.id) closed: peer=\(connection.username ?? "unknown"), type=\(connection.kind), state=\(String(describing: connection.fileState)), error=\(error?.localizedDescription ?? "EOF")")
         connection.connectTimer?.invalidate()
         if !connection.isOpen, connection.kind == ConnectionType.file, connection.uploadToken != nil {
             fallbackUploadConnection(connection)

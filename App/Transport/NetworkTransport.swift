@@ -65,6 +65,8 @@ final class TCPStream: ByteStream {
                     self.delegate?.byteStreamDidOpen(self)
                 case .failed(let error):
                     self.delegate?.byteStream(self, didCloseWith: error)
+                case .waiting(let error):
+                    self.delegate?.byteStream(self, isWaitingWith: error)
                 case .cancelled:
                     self.delegate?.byteStream(self, didCloseWith: nil)
                 default:

@@ -29,6 +29,47 @@ private final class TransferGateway: PeerGateway {
 }
 
 final class TransferRegressionTests: XCTestCase {
+    func testDifferentUploadersCanUseTheSameTransferToken() throws {
+        let manager = TransferManager()
+        let gateway = TransferGateway()
+        manager.gateway = gateway
+        manager.downloadDirectory = try temporaryDirectory()
+        defer { manager.serverWentOffline() }
+        let file = RemoteFileInfo(virtualPath: "song", size: 2)
+        let first = try XCTUnwrap(manager.addDownload(username: "first", file: file))
+        let second = try XCTUnwrap(manager.addDownload(username: "second", file: file))
+        for peer in ["first", "second"] {
+            XCTAssertEqual(manager.handleTransferRequest(direction: TransferDirection.upload, token: 1, file: "song", fileSize: 2, from: peer),
+                           PeerOut.transferResponse(token: 1, allowed: true))
+        }
+        manager.handleDownloadConnectionOpened(connectionID: 10, username: "first", token: 1)
+        manager.handleDownloadConnectionOpened(connectionID: 11, username: "second", token: 1)
+        XCTAssertEqual(first.status, .transferring)
+        XCTAssertEqual(second.status, .transferring)
+        XCTAssertTrue(gateway.closed.isEmpty)
+        manager.handleDownloadData(connectionID: 10, data: Data([1, 2]))
+        manager.handleDownloadData(connectionID: 11, data: Data([3, 4]))
+        XCTAssertEqual(first.status, .finished)
+        XCTAssertEqual(second.status, .finished)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: XCTUnwrap(first.localFilePath))), Data([1, 2]))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: XCTUnwrap(second.localFilePath))), Data([3, 4]))
+    }
+
+    func testUploaderCannotOverwriteAnotherFilesActiveToken() throws {
+        let manager = TransferManager()
+        manager.downloadDirectory = try temporaryDirectory()
+        defer { manager.serverWentOffline() }
+        let first = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "first", size: 2)))
+        let second = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "second", size: 2)))
+        _ = manager.handleTransferRequest(direction: TransferDirection.upload, token: 1, file: "first", fileSize: 2, from: "peer")
+        XCTAssertEqual(manager.handleTransferRequest(direction: TransferDirection.upload, token: 1, file: "second", fileSize: 99, from: "peer"),
+                       PeerOut.transferResponse(token: 1, allowed: false, reason: TransferRejectReason.queued))
+        XCTAssertEqual(second.status, .queued)
+        XCTAssertEqual(second.size, 2)
+        manager.handleDownloadConnectionOpened(connectionID: 10, username: "peer", token: 1)
+        XCTAssertEqual(first.status, .transferring)
+    }
+
     func testInitialDownloadRequestTimesOutAndCanBeRetried() throws {
         let manager = TransferManager()
         let gateway = TransferGateway()

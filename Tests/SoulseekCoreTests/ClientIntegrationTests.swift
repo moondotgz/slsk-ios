@@ -471,6 +471,64 @@ final class ClientIntegrationTests: XCTestCase {
         }
     }
 
+    func testReverseDownloadUsesPierceTokenSeparatelyFromTransferToken() throws {
+        let factory = MockTransportFactory()
+        let (client, server, storageURL) = makeClient(factory: factory)
+        login(client, server: server)
+        client.transfers.downloadDirectory = storageURL.appendingPathComponent("Downloads")
+        defer { client.disconnect(); try? FileManager.default.removeItem(at: storageURL) }
+        let file = RemoteFileInfo(virtualPath: "song", size: 4)
+        let item = try XCTUnwrap(client.transfers.addDownload(username: "uploader", file: file))
+        let control = factory.listener.accept()
+        pump(0.02)
+        control.inject(PeerInitOut.peerInit(username: "uploader", type: ConnectionType.peer)
+                       + PeerOut.transferRequest(direction: TransferDirection.upload, token: 777, file: "song", fileSize: 4))
+        pump(0.02)
+        XCTAssertEqual(item.status, .connecting)
+        XCTAssertEqual(control.sentFrames.last, PeerOut.transferResponse(token: 777, allowed: true))
+
+        var invitation = MessageBuffer()
+        invitation.writeString("uploader")
+        invitation.writeString(ConnectionType.file)
+        invitation.writeBytes([1, 0, 0, 127])
+        invitation.writeUInt32(5000)
+        invitation.writeUInt32(9999)
+        server.inject(Frame.server(code: ServerCode.connectToPeer, payload: invitation.bytes))
+        pump(0.02)
+        let fileStream = try XCTUnwrap(factory.peerStreams.last)
+        XCTAssertEqual(fileStream.sentFrames, [PeerInitOut.pierceFirewall(token: 9999)])
+        var token = MessageBuffer()
+        token.writeUInt32(777)
+        for byte in token.bytes { fileStream.inject(Data([byte])) }
+        pump(0.02)
+        XCTAssertEqual(item.status, .transferring)
+        var offset = MessageBuffer(try XCTUnwrap(fileStream.sentFrames.last))
+        XCTAssertEqual(try offset.readUInt64(), 0)
+        XCTAssertTrue(offset.isAtEnd)
+        fileStream.inject(Data([1, 2, 3, 4]))
+        pump(0.02)
+        XCTAssertEqual(item.status, .finished)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: XCTUnwrap(item.localFilePath))), Data([1, 2, 3, 4]))
+        XCTAssertTrue(client.connectionDiagnostics.contains { $0.contains("pierceToken=9999") })
+        XCTAssertTrue(client.connectionDiagnostics.contains { $0.contains("token=777") })
+    }
+
+    func testConnectionLogIsBoundedClearableAndDoesNotIncludePassword() {
+        let factory = MockTransportFactory()
+        let (client, server, storageURL) = makeClient(factory: factory)
+        client.config.password = "password-must-not-be-logged"
+        login(client, server: server)
+        defer { client.disconnect(); try? FileManager.default.removeItem(at: storageURL) }
+        XCTAssertFalse(client.connectionDiagnostics.joined().contains(client.config.password))
+        for id in 1...220 {
+            client.transfers.handleDownloadConnectionOpened(connectionID: UInt64(id), username: "unknown", token: 1)
+        }
+        XCTAssertEqual(client.connectionDiagnostics.count, 200)
+        XCTAssertTrue(client.connectionDiagnostics.last?.contains("socket 220") == true)
+        client.clearConnectionDiagnostics()
+        XCTAssertTrue(client.connectionDiagnostics.isEmpty)
+    }
+
     func testAcceptedFileHandshakeAndRawDataAcrossReadBoundaries() throws {
         for chunkSize in [1, 7, 1024] {
             let factory = MockTransportFactory()

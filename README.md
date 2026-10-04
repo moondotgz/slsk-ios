@@ -77,6 +77,12 @@ the app remembers them via security-scoped bookmarks.
 
 ## Development
 
+For transfer failures, reproduce the problem, then open **Settings → Transfer
+diagnostics → Copy connection log** and paste it into a bug report. You can
+also share or clear the log there. It keeps the latest 200 connection events
+in memory, including peer usernames and IP addresses, but no passwords, chat
+messages, or file contents.
+
 See [AGENTS.md](AGENTS.md) for the full architecture, protocol notes and
 build instructions. Quick version:
 

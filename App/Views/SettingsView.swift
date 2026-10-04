@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @EnvironmentObject private var client: SoulseekClient
@@ -8,6 +9,7 @@ struct SettingsView: View {
     @State private var newWish = ""
     @State private var uploadSlots = "2"
     @State private var listenPort = "2234"
+    @State private var copiedLog = false
 
     var body: some View {
         NavigationStack {
@@ -77,6 +79,32 @@ struct SettingsView: View {
                     Text("Transfers")
                 } footer: {
                     Text("Downloads appear in the app folder, visible in the Files app.")
+                }
+
+                Section("Transfer diagnostics") {
+                    Button {
+                        UIPasteboard.general.string = client.connectionDiagnostics.joined(separator: "\n")
+                        copiedLog = true
+                    } label: {
+                        Label(copiedLog ? "Connection log copied" : "Copy connection log", systemImage: "doc.on.doc")
+                    }
+                    .disabled(client.connectionDiagnostics.isEmpty)
+                    ShareLink(item: client.connectionDiagnostics.joined(separator: "\n")) {
+                        Label("Share connection log", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(client.connectionDiagnostics.isEmpty)
+                    Button("Clear connection log") {
+                        client.clearConnectionDiagnostics()
+                        copiedLog = false
+                    }
+                    DisclosureGroup("Recent connection events") {
+                        Text(client.connectionDiagnostics.suffix(30).joined(separator: "\n"))
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                    }
+                    Text("The log includes peer usernames and IP addresses, but no passwords or file contents. It is kept in memory for this session.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {

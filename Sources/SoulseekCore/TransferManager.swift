@@ -21,13 +21,19 @@ public final class TransferManager {
     public var onUploadFinishedSpeed: ((UInt32) -> Void)?
     public var onUserWatchRequested: ((String) -> Void)?
     public var onChanged: (() -> Void)?
+    public var onDiagnostic: ((String) -> Void)?
 
     public var uploadSlots: Int = 2
     public var maxDownloadConnections: Int = 8
     public var downloadDirectory: URL = URL(fileURLWithPath: NSHomeDirectory())
 
     private let tokens = TokenGenerator()
-    private var activeDownloads: [UInt32: DownloadItem] = [:]      // token → download
+    // Nicotine+ downloads.active_users scopes uploader-generated tokens by username.
+    private struct DownloadToken: Hashable {
+        let username: String
+        let token: UInt32
+    }
+    private var activeDownloads: [DownloadToken: DownloadItem] = [:]
     private var downloadConnections: [UInt64: DownloadItem] = [:]  // conn id → download
     private var activeUploads: [UInt32: UploadItem] = [:]          // token → upload
     private var uploadConnections: [UInt64: (upload: UploadItem, handle: FileHandle)] = [:]
@@ -85,6 +91,7 @@ public final class TransferManager {
     }
 
     private func enqueueDownload(_ item: DownloadItem) {
+        onDiagnostic?("Download queued: peer=\(item.username), id=\(item.id)")
         item.status = .queued
         item.queuePosition = 0
         startTimeout(for: item)
@@ -154,6 +161,7 @@ public final class TransferManager {
     public func handleUploadFailed(file: String, from username: String) {
         guard let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }),
               item.status.isActive else { return }
+        onDiagnostic?("UploadFailed from \(username): id=\(item.id), stage=\(item.status.label), bytes=\(item.currentOffset)/\(item.size)")
         deactivateDownload(item)
         item.status = .failed("Remote upload failed")
         notifyChanged()
@@ -168,6 +176,11 @@ public final class TransferManager {
         if let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }),
            (item.status.isActive || item.status == .failed("Connection timeout")
             || item.status == .failed("Peer connection failed")), item.status != .transferring {
+            let key = DownloadToken(username: username, token: token)
+            if let existing = activeDownloads[key], existing !== item {
+                onDiagnostic?("Rejected reused transfer token \(token) from \(username)")
+                return PeerOut.transferResponse(token: token, allowed: false, reason: TransferRejectReason.queued)
+            }
             guard activeDownloads.values.filter({ $0 !== item }).count < max(1, maxDownloadConnections) else {
                 return PeerOut.transferResponse(token: token, allowed: false, reason: TransferRejectReason.queued)
             }
@@ -179,7 +192,8 @@ public final class TransferManager {
             }
             item.status = .connecting
             item.queuePosition = 0
-            activeDownloads[token] = item
+            activeDownloads[key] = item
+            onDiagnostic?("Accepted upload offer: peer=\(username), token=\(token), id=\(item.id), size=\(item.size)")
             startTimeout(for: item)
             notifyChanged()
             return PeerOut.transferResponse(token: token, allowed: true)
@@ -195,8 +209,9 @@ public final class TransferManager {
 
     /// File connection opened by the uploader; `token` came in FileTransferInit.
     public func handleDownloadConnectionOpened(connectionID: UInt64, username: String, token: UInt32) {
-        guard let item = activeDownloads[token], item.username == username,
+        guard let item = activeDownloads[DownloadToken(username: username, token: token)],
               !downloadConnections.values.contains(where: { $0 === item }) else {
+            onDiagnostic?("Rejected file socket \(connectionID): peer=\(username), unknown or duplicate transfer token=\(token)")
             gateway?.closeFileConnection(connectionID)
             return
         }
@@ -221,6 +236,7 @@ public final class TransferManager {
         item.lastByteOffset = existing
         item.status = .transferring
         item.startedAt = Date()
+        onDiagnostic?("Download socket \(connectionID) bound: peer=\(username), token=\(token), sending offset=\(existing), size=\(item.size)")
         gateway?.sendFileOffset(connectionID, existing)
         if existing == item.size {
             if existing == 0 { _ = createPartialFile(at: partialURL) }
@@ -277,6 +293,7 @@ public final class TransferManager {
             finishDownload(item, connectionID: nil)
         } else {
             deactivateDownload(item)
+            onDiagnostic?("Download socket closed: id=\(item.id), bytes=\(item.currentOffset)/\(item.size), error=\(error?.localizedDescription ?? "EOF")")
             item.status = .failed("Connection closed")
             notifyChanged()
             persist()
@@ -318,6 +335,7 @@ public final class TransferManager {
         do {
             try movePartialToFinal(for: item)
             item.status = .finished
+            onDiagnostic?("Download finished: peer=\(item.username), id=\(item.id), bytes=\(item.size)")
             item.currentOffset = item.size
         } catch {
             item.status = .failed("Could not save downloaded file")
@@ -347,6 +365,7 @@ public final class TransferManager {
         let timer = Timer(fire: Date().addingTimeInterval(activationTimeout), interval: activationTimeout, repeats: false) { [weak self] _ in
             guard let self, item.status.isActive, item.status != .transferring else { return }
             if let download = item as? DownloadItem {
+                self.onDiagnostic?("Download timed out: peer=\(download.username), id=\(download.id), stage=\(download.status.label)")
                 self.deactivateDownload(download)
                 download.status = .failed("Connection timeout")
                 self.notifyChanged()
