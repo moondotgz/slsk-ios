@@ -89,6 +89,7 @@ struct LoginView: View {
                         Spacer()
                     }
                 }
+                .slskGlassButton(prominent: true)
                 .disabled(username.isEmpty || password.isEmpty
                           || client.connectionState == .connecting
                           || client.connectionState == .loggingIn)
@@ -101,6 +102,7 @@ struct LoginView: View {
                 }
             }
         }
+        .slskScreen()
         .navigationTitle("Login")
         .onAppear {
             username = client.config.username

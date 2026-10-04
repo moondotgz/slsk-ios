@@ -12,6 +12,8 @@ struct TransfersView: View {
                     Text("Uploads").tag(1)
                 }
                 .pickerStyle(.segmented)
+                .padding(8)
+                .slskGlassSurface()
                 .padding()
 
                 if segment == 0 {
@@ -20,6 +22,7 @@ struct TransfersView: View {
                     uploadList
                 }
             }
+            .slskScreen()
             .navigationTitle("Transfers")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

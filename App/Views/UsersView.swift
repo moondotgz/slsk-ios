@@ -54,6 +54,7 @@ struct UsersView: View {
                     Text("Distributed network")
                 }
             }
+            .slskScreen()
             .navigationTitle("Users")
             .sheet(item: selectedUserBinding) { username in
                 UserSheet(username: username)

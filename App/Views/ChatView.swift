@@ -12,6 +12,8 @@ struct ChatView: View {
                     Text("Private").tag(1)
                 }
                 .pickerStyle(.segmented)
+                .padding(8)
+                .slskGlassSurface()
                 .padding()
 
                 if segment == 0 {
@@ -20,6 +22,7 @@ struct ChatView: View {
                     PrivateMessagesListView()
                 }
             }
+            .slskScreen()
             .navigationTitle("Chat")
         }
     }
@@ -183,6 +186,7 @@ struct RoomMembersSheet: View {
                     }
                 }
             }
+            .slskScreen()
             .navigationTitle("Members")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -326,7 +330,7 @@ struct GlobalFeedView: View {
                         client.leaveGlobalRoomFeed()
                     }
                 }
-                .buttonStyle(.bordered)
+                .slskGlassButton()
             }
             .padding()
         }
@@ -360,7 +364,7 @@ struct MessageList<Message: View>: View {
                 }
             }
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background { SlskBackdrop() }
     }
 }
 
@@ -414,10 +418,16 @@ struct MessageInput: View {
                 text = ""
             } label: {
                 Image(systemName: "paperplane.fill")
+                    .frame(minWidth: 24, minHeight: 24)
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .accessibilityLabel("Send message")
             .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(10)
-        .background(.bar)
+        .slskGlassSurface(cornerRadius: 28)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 }

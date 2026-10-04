@@ -18,7 +18,8 @@ build environment:
 
 - **Tests** run on Linux (`swift test` in a Swift 6 container) — see the
   `linux-tests` job in `.github/workflows/build.yml`.
-- **The IPA** is built on `macos-15` runners: XcodeGen generates
+- **The IPA** on the `liquidglass` branch is built on `xcode-27` runners
+  (macOS 27, GitHub public preview) with Xcode 27. XcodeGen generates
   `Slsk.xcodeproj` from `project.yml`, `xcodebuild archive` builds it unsigned,
   and the `.app` is zipped into a `Payload/` → unsigned `.ipa` artifact.
   Users sideload it (Sideloadly/AltStore/TrollStore re-sign it).
@@ -134,6 +135,12 @@ sends u32 + 0xFFFFFFFF garbage" bug workaround in `FileListCodec`.
    Bump them whenever UI-visible state changes.
 
 ## How to build / test
+
+The Liquid Glass UI requires Xcode 26 or newer to compile. Native glass is
+enabled on iOS 26 and newer, with material/opaque fallbacks on older iOS
+versions and when accessibility settings reduce transparency or increase
+contrast. The deployment target remains iOS 16. Keep glass on controls,
+not file-list rows or message content.
 
 ```bash
 # Tests (Linux or macOS with Swift installed)

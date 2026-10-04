@@ -219,6 +219,7 @@ struct SettingsView: View {
                     Text("About")
                 }
             }
+            .slskScreen()
             .navigationTitle("Settings")
             .onAppear {
                 uploadSlots = String(client.transfers.uploadSlots)

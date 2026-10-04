@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, liquidglass]
   pull_request:
   workflow_dispatch:
 
@@ -36,7 +36,7 @@ jobs:
   build-ipa:
     name: Build unsigned IPA
     needs: linux-tests
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -44,6 +44,11 @@ jobs:
 
       - name: Install XcodeGen
         run: brew install xcodegen
+
+      - name: Select Xcode 27
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '27'
 
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml

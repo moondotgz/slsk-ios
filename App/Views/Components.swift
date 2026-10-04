@@ -159,6 +159,7 @@ struct UserSheet: View {
                     }
                 }
             }
+            .slskScreen()
             .navigationTitle("User")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -210,6 +211,7 @@ struct BrowseSheet: View {
                     }
                 }
             }
+            .slskScreen()
             .navigationTitle("Browse \(username)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -136,6 +136,7 @@ struct SharesView: View {
                     Text("Sent to users who request your info.")
                 }
             }
+            .slskScreen()
             .navigationTitle("Shares")
             .fileImporter(isPresented: $showImporter,
                           allowedContentTypes: [.folder],
