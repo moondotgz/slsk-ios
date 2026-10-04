@@ -74,7 +74,7 @@ struct UserSheet: View {
                         }
                         if info.privileged {
                             Label("Privileged", systemImage: "crown.fill")
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.tint)
                         }
                         if let country = info.country, !country.isEmpty {
                             Label("Country: \(country)", systemImage: "globe")
@@ -242,7 +242,7 @@ struct FolderRow: View {
             } label: {
                 HStack {
                     Image(systemName: expanded ? "folder.fill" : "folder")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.tint)
                     Text(folderName)
                         .font(.subheadline)
                         .multilineTextAlignment(.leading)

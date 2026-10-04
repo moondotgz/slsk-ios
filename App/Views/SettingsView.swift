@@ -12,6 +12,8 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                ThemeSettingsSection()
+
                 Section {
                     LabeledContent("Username", value: client.config.username)
                     LabeledContent("Status") {

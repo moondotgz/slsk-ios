@@ -47,7 +47,7 @@ struct RoomsListView: View {
                                 if room.isPrivate {
                                     Image(systemName: "lock.fill")
                                         .font(.caption)
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(.tint)
                                 }
                                 Spacer()
                                 Text("\(room.users.count)")
@@ -174,7 +174,7 @@ struct RoomMembersSheet: View {
                                 if roomHolder.room.owner == user {
                                     Image(systemName: "crown.fill")
                                         .font(.caption)
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(.tint)
                                 }
                                 if roomHolder.room.operators.contains(user) {
                                     Image(systemName: "checkmark.shield.fill")
@@ -369,6 +369,7 @@ struct MessageList<Message: View>: View {
 }
 
 struct MessageBubble: View {
+    @Environment(\.slskAccent) private var accent
     let message: ChatMessage
 
     var body: some View {
@@ -379,7 +380,7 @@ struct MessageBubble: View {
                     if !message.isSelf {
                         Text(message.username)
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.tint)
                     }
                     Text(message.timestamp, style: .time)
                         .font(.caption2)
@@ -390,7 +391,7 @@ struct MessageBubble: View {
                     .textSelection(.enabled)
             }
             .padding(10)
-            .background(message.isSelf ? Color.orange.opacity(0.25) : Color(uiColor: .secondarySystemGroupedBackground))
+            .background(message.isSelf ? accent.opacity(0.25) : Color(uiColor: .secondarySystemGroupedBackground))
             .clipShape(RoundedRectangle(cornerRadius: 14))
             if !message.isSelf { Spacer(minLength: 40) }
         }

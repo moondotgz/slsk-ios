@@ -41,6 +41,11 @@ Select `liquidglass` when running Actions to build this interface. This branch
 uses GitHub's `xcode-27` runner (macOS 27 / Xcode 27, currently public preview).
 Local app builds need Xcode 26 or newer.
 
+In **Settings → Appearance**, use the color pickers to customize the accent
+and secondary backdrop colors. Changes apply immediately and persist across
+launches. **Reset theme colors** restores orange/teal. Connection and transfer
+status colors remain unchanged.
+
 The repository has no committed Xcode project and releases are built in CI:
 
 1. Push this repository to GitHub, including `.github/workflows/build.yml`.

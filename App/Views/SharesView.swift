@@ -95,7 +95,7 @@ struct SharesView: View {
                     ForEach(client.shares.sharedDirectories, id: \.absoluteString) { url in
                         HStack {
                             Image(systemName: "folder.fill")
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.tint)
                             VStack(alignment: .leading) {
                                 Text(url.lastPathComponent)
                                 Text(url.deletingLastPathComponent().path)

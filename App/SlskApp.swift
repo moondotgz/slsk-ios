@@ -10,7 +10,7 @@ struct SlskApp: App {
             RootView()
                 .environmentObject(appState)
                 .environmentObject(appState.client)
-                .tint(.orange)
+                .modifier(SlskTheme())
                 .onChange(of: scenePhase) { phase in
                     if phase == .background {
                         appState.client.saveAll()

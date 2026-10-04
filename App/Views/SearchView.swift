@@ -140,7 +140,7 @@ struct SearchFolderSection: View {
             } label: {
                 HStack {
                     Image(systemName: expanded ? "folder.fill" : "folder")
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(lastFolderComponent)
                             .font(.subheadline.weight(.medium))
@@ -182,6 +182,7 @@ struct SearchFolderSection: View {
 }
 
 struct HitRow: View {
+    @Environment(\.slskAccent) private var accent
     @EnvironmentObject private var client: SoulseekClient
     let hit: SearchHit
 
@@ -229,7 +230,7 @@ struct HitRow: View {
             } label: {
                 Image(systemName: "arrow.down.circle")
                     .font(.title3)
-                    .foregroundStyle(hit.freeUploadSlot ? .green : .orange)
+                    .foregroundStyle(hit.freeUploadSlot ? Color.green : accent)
             }
         }
         .padding(.vertical, 2)

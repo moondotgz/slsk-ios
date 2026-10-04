@@ -82,7 +82,7 @@ struct BuddyRow: View {
                         if info.privileged {
                             Image(systemName: "crown.fill")
                                 .font(.caption2)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.tint)
                         }
                         Text("\(info.stats.sharedFiles) files")
                         Text(Format.speed(Double(info.stats.avgSpeed)))

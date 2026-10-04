@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SlskBackdrop: View {
+    @Environment(\.slskAccent) private var accent
+    @Environment(\.slskBackdropColor) private var backdropColor
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -9,7 +11,7 @@ struct SlskBackdrop: View {
             Color(uiColor: .systemGroupedBackground)
             if !reduceTransparency && contrast != .increased {
                 LinearGradient(
-                    colors: [.orange.opacity(0.16), .clear, .teal.opacity(0.10)],
+                    colors: [accent.opacity(0.16), .clear, backdropColor.opacity(0.10)],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 )
             }

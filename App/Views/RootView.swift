@@ -54,7 +54,7 @@ struct LoginView: View {
                     .font(.largeTitle.bold())
                     .frame(maxWidth: .infinity, alignment: .center)
                     .listRowBackground(Color.clear)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.tint)
             }
 
             Section("Soulseek account") {
