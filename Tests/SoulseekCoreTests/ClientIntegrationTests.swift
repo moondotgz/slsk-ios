@@ -139,6 +139,25 @@ enum TestFrames {
 }
 
 final class ClientIntegrationTests: XCTestCase {
+    func testRepeatedShortServerSessionsBackOffAndIgnoreOldSocketCallbacks() {
+        let factory = MockTransportFactory()
+        let (client, first, directory) = makeClient(factory: factory)
+        defer { client.disconnect(); try? FileManager.default.removeItem(at: directory) }
+        login(client, server: first)
+        client.byteStream(first, didCloseWith: SlskError.notConnected)
+        XCTAssertFalse(first.isOpen)
+        XCTAssertTrue(client.connectionDiagnostics.contains { $0.contains("attempt=1, delay=10s") })
+        client.connect()
+        pump()
+        let second = factory.serverStreams[1]
+        login(client, server: second)
+        client.byteStream(first, didCloseWith: SlskError.notConnected)
+        XCTAssertTrue(client.isLoggedIn)
+        client.byteStream(second, didCloseWith: SlskError.notConnected)
+        XCTAssertFalse(second.isOpen)
+        XCTAssertTrue(client.connectionDiagnostics.contains { $0.contains("attempt=2, delay=20s") })
+    }
+
     private func pump(_ seconds: Double = 0.2) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }

@@ -29,6 +29,29 @@ private final class TransferGateway: PeerGateway {
 }
 
 final class TransferRegressionTests: XCTestCase {
+    func testServerReconnectRetainsOnlyLastKnownQueueUntilUploaderConfirms() throws {
+        let manager = TransferManager()
+        let gateway = TransferGateway()
+        manager.gateway = gateway
+        defer { manager.serverWentOffline() }
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 100)))
+        manager.handlePlaceInQueueResponse(file: "song", place: 13, from: "peer")
+        XCTAssertFalse(item.queuePositionIsStale)
+        manager.serverWentOffline()
+        XCTAssertEqual(item.status, .userOffline)
+        XCTAssertEqual(item.queuePosition, 13)
+        XCTAssertTrue(item.queuePositionIsStale)
+        manager.handleUserOnline("peer")
+        XCTAssertEqual(item.status, .queued)
+        XCTAssertEqual(item.queuePosition, 13)
+        XCTAssertTrue(item.queuePositionIsStale)
+        XCTAssertEqual(gateway.messages.suffix(2), [PeerOut.queueUpload("song"), PeerOut.placeInQueueRequest("song")])
+        manager.handlePlaceInQueueResponse(file: "song", place: 7, from: "peer")
+        XCTAssertEqual(item.status, .remotelyQueued)
+        XCTAssertEqual(item.queuePosition, 7)
+        XCTAssertFalse(item.queuePositionIsStale)
+    }
+
     func testDifferentUploadersCanUseTheSameTransferToken() throws {
         let manager = TransferManager()
         let gateway = TransferGateway()
