@@ -882,7 +882,7 @@ public final class SoulseekClient: ObservableObject {
         let response = Frame.peer(code: PeerCode.fileSearchResponse, payload: [UInt8](payload))
 
         // Nicotine+ search.py sends FileSearchResponse to the searcher, never to the D parent.
-        peerManager.sendToPeer(username, response)
+        peerManager.sendSearchResponse(username, response)
     }
 
     // MARK: - Timers

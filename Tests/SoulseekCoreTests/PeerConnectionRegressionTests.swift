@@ -3,6 +3,90 @@ import XCTest
 @testable import SoulseekCore
 
 final class PeerConnectionRegressionTests: XCTestCase {
+    func testAddressUpdatesDoNotDialUnrequestedPeers() {
+        let factory = MockTransportFactory()
+        let manager = PeerConnectionManager(factory: factory)
+        manager.localUsername = "tester"
+        defer { manager.closeAll() }
+        for index in 0..<1000 {
+            manager.setPeerAddress("peer\(index)", host: "127.0.0.1", port: 5000)
+        }
+        XCTAssertEqual(factory.peerStreams.count, 0)
+    }
+
+    func testSearchFloodIsBoundedAndLeavesRoomForDownloads() {
+        let factory = MockTransportFactory()
+        let manager = PeerConnectionManager(factory: factory)
+        manager.localUsername = "tester"
+        defer { manager.closeAll() }
+        var requested: [String] = []
+        manager.addressRequestHandler = { requested.append($0) }
+        for index in 0..<1000 {
+            manager.sendSearchResponse("searcher\(index)", Data([1]))
+        }
+        XCTAssertEqual(requested.count, 16)
+        for username in requested {
+            manager.setPeerAddress(username, host: "127.0.0.1", port: 5000)
+        }
+        XCTAssertEqual(manager.activeConnectionCount, 16)
+        manager.sendToPeer("uploader", PeerOut.queueUpload("song"))
+        manager.setPeerAddress("uploader", host: "127.0.0.1", port: 5000)
+        XCTAssertEqual(manager.activeConnectionCount, 17)
+    }
+
+    func testIdlePeersExpireAndCanReconnect() {
+        let factory = MockTransportFactory()
+        let manager = PeerConnectionManager(factory: factory)
+        manager.localUsername = "tester"
+        defer { manager.closeAll() }
+        manager.sendToPeer("peer", PeerOut.queueUpload("song"))
+        manager.setPeerAddress("peer", host: "127.0.0.1", port: 5000)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        XCTAssertEqual(manager.activeConnectionCount, 1)
+        manager.maintainConnections(now: Date().addingTimeInterval(61))
+        XCTAssertEqual(manager.activeConnectionCount, 0)
+        manager.sendToPeer("peer", PeerOut.queueUpload("other"))
+        XCTAssertEqual(manager.activeConnectionCount, 1)
+    }
+
+    func testParentCandidatesAreDeduplicatedAndUnclassifiedSocketsAreBounded() {
+        let factory = MockTransportFactory()
+        let manager = PeerConnectionManager(factory: factory)
+        manager.localUsername = "tester"
+        defer { manager.closeAll() }
+        for _ in 0..<100 {
+            manager.connectToParentCandidate(username: "parent", host: "127.0.0.1", port: 5000)
+        }
+        XCTAssertEqual(factory.peerStreams.count, 1)
+        for _ in 0..<100 { _ = factory.listener.accept() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        XCTAssertLessThanOrEqual(manager.activeConnectionCount, 48)
+        manager.maintainConnections(now: Date().addingTimeInterval(31))
+        XCTAssertEqual(manager.activeConnectionCount, 1)
+    }
+
+    func testFileConnectionsHaveReservedCapacityAndActiveFilesAreNotIdlePeerExpired() {
+        let factory = MockTransportFactory()
+        let manager = PeerConnectionManager(factory: factory)
+        manager.localUsername = "tester"
+        defer { manager.closeAll() }
+        for _ in 0..<60 { _ = factory.listener.accept() }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        XCTAssertEqual(manager.activeConnectionCount, 48)
+        for index in 0..<100 {
+            manager.openDownloadConnection(username: "uploader\(index)", host: "127.0.0.1", port: 5000,
+                                           token: UInt32(index))
+        }
+        XCTAssertEqual(manager.activeConnectionCount, 64)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        var token = MessageBuffer()
+        token.writeUInt32(123)
+        factory.peerStreams[0].inject(token.data)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        manager.maintainConnections(now: Date().addingTimeInterval(61))
+        XCTAssertEqual(manager.activeConnectionCount, 1)
+    }
+
     func testIncomingIndirectPeerConnectionIsReusedForReplies() {
         let factory = MockTransportFactory()
         let manager = PeerConnectionManager(factory: factory)

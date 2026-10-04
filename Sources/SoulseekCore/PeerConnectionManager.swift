@@ -61,6 +61,10 @@ public final class PeerConnectionManager: PeerGateway {
 
     private let tokens = TokenGenerator()
     private var nextStreamID: UInt64 = 0
+    private var maintenanceTimer: Timer?
+    private let maximumConnections = 64
+    private let maximumSearchSessions = 16
+    public var activeConnectionCount: Int { connections.count }
 
     private final class PeerSession {
         var username: String
@@ -71,6 +75,8 @@ public final class PeerConnectionManager: PeerGateway {
         var pendingMessages: [Data] = []
         var isConnecting = false
         var usedIndirect = false
+        var searchOnly = false
+        var lastActivity = Date()
 
         init(username: String) {
             self.username = username
@@ -101,6 +107,7 @@ public final class PeerConnectionManager: PeerGateway {
         var uploadToken: UInt32?
         var connectTimer: Timer?
         var isDistributedChild = false
+        var lastActivity = Date()
 
         init(id: UInt64, stream: any ByteStream, kind: String) {
             self.id = id
@@ -125,6 +132,8 @@ public final class PeerConnectionManager: PeerGateway {
             self.portChangedHandler?(port)
         }
     }
+
+    deinit { maintenanceTimer?.invalidate() }
 
     // MARK: - Listener
 
@@ -157,7 +166,7 @@ public final class PeerConnectionManager: PeerGateway {
         session.addressTimer?.invalidate()
         session.addressTimer = nil
 
-        if session.address != nil {
+        if session.address != nil && !session.pendingMessages.isEmpty {
             attemptDirectConnection(session)
         } else if !session.pendingMessages.isEmpty {
             session.pendingMessages.removeAll()
@@ -170,14 +179,35 @@ public final class PeerConnectionManager: PeerGateway {
     }
 
     public func sendToPeer(_ username: String, _ data: Data) {
+        sendToPeer(username, data, searchOnly: false)
+    }
+
+    public func sendSearchResponse(_ username: String, _ data: Data) {
+        let existing = sessions[username]
+        let alreadyActive = existing.map { $0.connection != nil || $0.addressRequested || $0.isConnecting } ?? false
+        guard alreadyActive || sessions.values.filter({
+            $0.searchOnly && ($0.connection != nil || $0.addressRequested || $0.isConnecting)
+        }).count < maximumSearchSessions else { return }
+        sendToPeer(username, data, searchOnly: true)
+    }
+
+    private func sendToPeer(_ username: String, _ data: Data, searchOnly: Bool) {
         guard localUsername != nil else { return }
+        let existed = sessions[username] != nil
         let session = session(for: username)
+        if !existed || (session.connection == nil && !session.isConnecting && !session.addressRequested && session.pendingMessages.isEmpty) {
+            session.searchOnly = searchOnly
+        }
+        if !searchOnly { session.searchOnly = false }
+        session.lastActivity = Date()
 
         if let connection = session.connection, connection.isOpen, connection.kind == ConnectionType.peer {
+            connection.lastActivity = Date()
             connection.stream.send(data)
             return
         }
 
+        if searchOnly && !session.pendingMessages.isEmpty { return }
         session.pendingMessages.append(data)
         guard !session.isConnecting else { return }
         session.usedIndirect = false
@@ -211,6 +241,7 @@ public final class PeerConnectionManager: PeerGateway {
 
     @discardableResult
     public func openUploadConnection(username: String, token: UInt32) -> UInt64? {
+        guard admitConnection(file: true) else { return nil }
         let session = session(for: username)
 
         if let address = session.address {
@@ -239,6 +270,7 @@ public final class PeerConnectionManager: PeerGateway {
 
     /// Called when the server relays a ConnectToPeer('F') from the uploader.
     public func openDownloadConnection(username: String, host: String, port: UInt16, token: UInt32) {
+        guard admitConnection(file: true) else { return }
         let connection = makeFileConnection(username: username)
         onDiagnostic?("Reverse file invitation: socket=\(connection.id), peer=\(username), endpoint=\(host):\(port), pierceToken=\(token)")
         connection.fileState = .awaitingToken
@@ -265,6 +297,7 @@ public final class PeerConnectionManager: PeerGateway {
             completion(SlskError.notConnected)
             return
         }
+        connection.lastActivity = Date()
         connection.stream.send(data, completion: completion)
     }
 
@@ -299,6 +332,8 @@ public final class PeerConnectionManager: PeerGateway {
 
     public func connectToParentCandidate(username: String, host: String, port: UInt16) {
         guard localUsername != nil else { return }
+        guard !connections.values.contains(where: { $0.kind == ConnectionType.distributed && $0.username == username }),
+              admitConnection() else { return }
         let connection = PeerConnection(id: nextID(), stream: factory.makePeerStream(),
                                         kind: ConnectionType.distributed)
         connection.username = username
@@ -325,6 +360,8 @@ public final class PeerConnectionManager: PeerGateway {
     }
 
     public func closeAll() {
+        maintenanceTimer?.invalidate()
+        maintenanceTimer = nil
         for session in sessions.values { session.addressTimer?.invalidate() }
         for connection in connections.values {
             connection.connectTimer?.invalidate()
@@ -366,6 +403,10 @@ public final class PeerConnectionManager: PeerGateway {
         case ConnectionType.file:
             openDownloadConnection(username: username, host: host, port: port, token: token)
         case ConnectionType.peer, ConnectionType.distributed:
+            guard admitConnection() else {
+                sendCantConnectToPeer(token: token, username: username)
+                return
+            }
             let connection = PeerConnection(id: nextID(), stream: factory.makePeerStream(), kind: type)
             connection.username = username
             connections[connection.id] = connection
@@ -398,6 +439,7 @@ public final class PeerConnectionManager: PeerGateway {
     // MARK: - Session plumbing
 
     private func session(for username: String) -> PeerSession {
+        startMaintenance()
         if let session = sessions[username] {
             return session
         }
@@ -407,12 +449,18 @@ public final class PeerConnectionManager: PeerGateway {
     }
 
     private func nextID() -> UInt64 {
+        startMaintenance()
         nextStreamID += 1
         return nextStreamID
     }
 
     private func attemptDirectConnection(_ session: PeerSession) {
         guard let address = session.address, !session.isConnecting, session.connection == nil else { return }
+        guard admitConnection() else {
+            session.pendingMessages.removeAll()
+            if !session.searchOnly { delegate?.peerManager(self, didFailPeerConnection: session.username) }
+            return
+        }
         session.isConnecting = true
         let connection = PeerConnection(id: nextID(), stream: factory.makePeerStream(), kind: ConnectionType.peer)
         connection.username = session.username
@@ -479,6 +527,7 @@ public final class PeerConnectionManager: PeerGateway {
     // MARK: - Incoming stream routing (listener-accepted connections)
 
     private func handleAccepted(stream: any ByteStream) {
+        guard admitConnection() else { stream.close(); return }
         let connection = PeerConnection(id: nextID(), stream: stream, kind: "?")
         connection.isOpen = true
         connections[connection.id] = connection
@@ -577,7 +626,8 @@ public final class PeerConnectionManager: PeerGateway {
                     delegate?.peerManager(self, didAcceptChildConnection: connection.id, username: username)
                 }
             default:
-                break
+                connections[connection.id] = nil
+                connection.stream.close()
             }
 
         default:
@@ -609,7 +659,45 @@ public final class PeerConnectionManager: PeerGateway {
         let pending = session.pendingMessages
         session.pendingMessages.removeAll()
         for message in pending {
+            connection.lastActivity = Date()
             connection.stream.send(message)
+        }
+    }
+
+    private func startMaintenance() {
+        guard maintenanceTimer == nil else { return }
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            self?.maintainConnections()
+        }
+        maintenanceTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func admitConnection(file: Bool = false) -> Bool {
+        maintainConnections()
+        return connections.count < (file ? maximumConnections : maximumConnections - 16)
+    }
+
+    // Nicotine+ slskproto.py expires idle peer sockets rather than retaining every search peer.
+    func maintainConnections(now: Date = Date()) {
+        for connection in Array(connections.values) {
+            let age = now.timeIntervalSince(connection.lastActivity)
+            let awaitingFileHandshake: Bool
+            switch connection.fileState {
+            case .awaitingInitFrame?, .awaitingToken?, .awaitingOffset?: awaitingFileHandshake = true
+            default: awaitingFileHandshake = false
+            }
+            let expired = (!connection.isOpen || connection.kind == "?" || awaitingFileHandshake) ? age > 30
+                : connection.kind == ConnectionType.peer && age > 60
+            guard expired else { continue }
+            onDiagnostic?("Socket \(connection.id) expired: peer=\(connection.username ?? "unknown"), type=\(connection.kind), activeSockets=\(connections.count)")
+            byteStream(connection.stream, didCloseWith: connection.isOpen ? nil : SlskError.notConnected)
+            connection.stream.close()
+        }
+        for (username, session) in sessions where session.connection == nil && !session.isConnecting
+            && !session.addressRequested && session.pendingMessages.isEmpty
+            && now.timeIntervalSince(session.lastActivity) > 300 {
+            sessions[username] = nil
         }
     }
 
@@ -673,12 +761,13 @@ public final class PeerConnectionManager: PeerGateway {
 extension PeerConnectionManager: ByteStreamDelegate {
     public func byteStream(_ stream: any ByteStream, isWaitingWith error: any Error) {
         guard let connection = connections.values.first(where: { $0.stream === stream }) else { return }
-        onDiagnostic?("Socket \(connection.id) waiting: peer=\(connection.username ?? "unknown"), type=\(connection.kind), error=\(error.localizedDescription)")
+        onDiagnostic?("Socket \(connection.id) waiting: peer=\(connection.username ?? "unknown"), type=\(connection.kind), activeSockets=\(connections.count), error=\(error.localizedDescription)")
     }
 
     public func byteStreamDidOpen(_ stream: any ByteStream) {
         guard let connection = connections.values.first(where: { $0.stream === stream }) else { return }
         connection.isOpen = true
+        connection.lastActivity = Date()
         onDiagnostic?("Socket \(connection.id) ready: peer=\(connection.username ?? "unknown"), type=\(connection.kind)")
         connection.connectTimer?.invalidate()
         if connection.kind == ConnectionType.file, let token = connection.uploadToken,
@@ -694,6 +783,7 @@ extension PeerConnectionManager: ByteStreamDelegate {
 
     public func byteStream(_ stream: any ByteStream, didReceive data: Data) {
         guard let connection = connections.values.first(where: { $0.stream === stream }) else { return }
+        connection.lastActivity = Date()
 
         if connection.kind == ConnectionType.file {
             handleFileBytes(connection, data: data)
@@ -713,7 +803,7 @@ extension PeerConnectionManager: ByteStreamDelegate {
             }
         } catch {
             onDiagnostic?("Socket \(connection.id) framing error: \(error.localizedDescription)")
-            connections[connection.id] = nil
+            byteStream(stream, didCloseWith: error)
             stream.close()
         }
     }
@@ -727,6 +817,7 @@ extension PeerConnectionManager: ByteStreamDelegate {
             return
         }
         connections[connection.id] = nil
+        stream.close()
 
         if connection.kind == ConnectionType.file {
             delegate?.peerManager(self, didCloseFileConnection: connection.id, error: error)
