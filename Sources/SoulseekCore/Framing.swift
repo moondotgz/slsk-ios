@@ -51,9 +51,18 @@ public struct FrameAssembler {
     public init() {}
 
     public mutating func feed(_ data: Data, handler: (Data) -> Void) throws {
-        pending.append(contentsOf: [UInt8](data))
+        append(data)
+        while let body = try nextFrame() {
+            handler(body)
+        }
+    }
 
-        while pending.count >= 4 {
+    public mutating func append(_ data: Data) {
+        pending.append(contentsOf: [UInt8](data))
+    }
+
+    public mutating func nextFrame() throws -> Data? {
+        if pending.count >= 4 {
             let length = Int(pending[0])
                 | (Int(pending[1]) << 8)
                 | (Int(pending[2]) << 16)
@@ -62,12 +71,19 @@ public struct FrameAssembler {
             guard length >= 1, length <= maximumFrameSize else {
                 throw SlskError.protocolViolation("frame length \(length) out of bounds")
             }
-            guard pending.count >= 4 + length else { break }
+            guard pending.count >= 4 + length else { return nil }
 
             let body = Data(pending[4 ..< 4 + length])
             pending.removeFirst(4 + length)
-            handler(body)
+            return body
         }
+        return nil
+    }
+
+    public mutating func takePendingBytes() -> Data {
+        let bytes = Data(pending)
+        pending.removeAll()
+        return bytes
     }
 
     public mutating func reset() {

@@ -26,10 +26,10 @@ final class MockStream: ByteStream {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.isOpen = true
-            self.delegate?.byteStreamDidOpen(self)
             if let initialBytes {
                 self.send(initialBytes)
             }
+            self.delegate?.byteStreamDidOpen(self)
         }
     }
 
@@ -40,6 +40,11 @@ final class MockStream: ByteStream {
                 peer.delegate?.byteStream(peer, didReceive: data)
             }
         }
+    }
+
+    func send(_ data: Data, completion: @escaping ((any Error)?) -> Void) {
+        send(data)
+        DispatchQueue.main.async { completion(nil) }
     }
 
     func close() {
@@ -233,18 +238,17 @@ final class ClientIntegrationTests: XCTestCase {
 
         let peer = factory.peerStreams[0]
         // Initial bytes: PeerInit frame for the searcher.
-        XCTAssertEqual(peer.sentFrames.count, 1)
+        XCTAssertEqual(peer.sentFrames.count, 2)
         var initFrame = MessageBuffer(peer.sentFrames[0])
         XCTAssertEqual(try? initFrame.readUInt32(), UInt32(peer.sentFrames[0].count - 4))
         XCTAssertEqual(try? initFrame.readByte(), PeerInitCode.peerInit.rawValue)
         XCTAssertEqual(try? initFrame.readString(), "tester")
         XCTAssertEqual(try? initFrame.readString(), "P")
 
-        // NOTE: the queued search response should flush here too, but in the
-        // mock environment byteStreamDidOpen currently finds the connection
-        // missing from the manager's map (see "Known gaps" in AGENTS.md).
-        // The browse round trip below exercises the same path on real
-        // Network.framework transports.
+        guard peer.sentFrames.count >= 2 else { return }
+        var response = MessageBuffer(peer.sentFrames[1])
+        _ = try? response.readUInt32()
+        XCTAssertEqual(try? response.readUInt32(), PeerCode.fileSearchResponse)
     }
 
     func testIncomingQueueUploadProducesDenialForUnsharedFile() {
@@ -279,6 +283,36 @@ final class ClientIntegrationTests: XCTestCase {
             var buffer = MessageBuffer(denial.dropFirst(8))
             XCTAssertEqual(try? buffer.readString(), "\\nobody\\secret.mp3")
             XCTAssertEqual(try? buffer.readString(), TransferRejectReason.fileNotShared)
+        }
+    }
+
+    func testAcceptedFileHandshakeAndRawDataAcrossReadBoundaries() throws {
+        for chunkSize in [1, 7, 1024] {
+            let factory = MockTransportFactory()
+            let (client, server, storageURL) = makeClient(factory: factory)
+            login(client, server: server)
+            let downloadURL = storageURL.appendingPathComponent("Downloads")
+            client.transfers.downloadDirectory = downloadURL
+            defer { client.disconnect(); try? FileManager.default.removeItem(at: storageURL) }
+            let file = RemoteFileInfo(virtualPath: "\\folder\\song.mp3", size: 4)
+            let item = client.transfers.addDownload(username: "uploader", file: file)!
+            _ = client.transfers.handleTransferRequest(direction: TransferDirection.upload, token: 777,
+                                                       file: file.virtualPath, fileSize: 4, from: "uploader")
+            let incoming = factory.listener.accept()
+            pump()
+            XCTAssertTrue(incoming.isOpen, "accepted streams must be started")
+            var token = MessageBuffer()
+            token.writeUInt32(777)
+            let packet = PeerInitOut.peerInit(username: "uploader", type: ConnectionType.file)
+                + token.data + Data([0, 0, 0, 0])
+            for offset in stride(from: 0, to: packet.count, by: chunkSize) {
+                incoming.inject(Data(packet[offset..<min(offset + chunkSize, packet.count)]))
+            }
+            pump()
+            XCTAssertEqual(item.status, .finished)
+            if let path = item.localFilePath {
+                XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), Data([0, 0, 0, 0]))
+            } else { XCTFail("download has no final path") }
         }
     }
 }

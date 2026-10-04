@@ -1,5 +1,4 @@
 import SwiftUI
-import SoulseekCore
 
 @main
 struct SlskApp: App {

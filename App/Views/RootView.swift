@@ -1,5 +1,4 @@
 import SwiftUI
-import SoulseekCore
 
 struct RootView: View {
     @EnvironmentObject private var appState: AppState
@@ -33,6 +32,9 @@ struct RootView: View {
                !client.config.username.isEmpty {
                 client.connect()
             }
+        }
+        .onReceive(client.$connectionState) { state in
+            if state == .loggedIn { appState.loggedIn() }
         }
     }
 }
@@ -75,7 +77,6 @@ struct LoginView: View {
                     client.config.serverHost = server
                     client.config.serverPort = UInt16(port) ?? 2242
                     client.login(username: username, password: password)
-                    appState.loggedIn()
                 } label: {
                     HStack {
                         Spacer()

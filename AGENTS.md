@@ -1,8 +1,8 @@
 # AGENTS.md — Slsk iOS (Soulseek client)
 
-Guidance for AI agents (and humans) working in this repository. Read this file
-before changing anything; it explains the architecture, the protocol, and the
-build pipeline, all of which have non-obvious constraints.
+Repository guidance for contributors. Read this file before changing anything;
+it explains the architecture, protocol, and build pipeline, all of which have
+non-obvious constraints.
 
 ## What this is
 
@@ -12,19 +12,19 @@ Soulseek protocol (GPL-3+ Python, vendored under `docs/reference/nicotine-plus/`
 as reference material — do NOT port code verbatim, use it to verify wire
 format details).
 
-**The host machine cannot build iOS apps.** There is no Swift toolchain, no
-Xcode, no XcodeGen locally. CI is the build system:
+Core development and tests are supported on Linux and macOS. Building the iOS
+application requires macOS with Xcode; GitHub Actions provides the canonical
+build environment:
 
 - **Tests** run on Linux (`swift test` in a Swift 6 container) — see the
-  `linux-tests` job in `.github/workflows/build.yml`. This is the only
-  automated feedback loop for `SoulseekCore`.
+  `linux-tests` job in `.github/workflows/build.yml`.
 - **The IPA** is built on `macos-15` runners: XcodeGen generates
   `Slsk.xcodeproj` from `project.yml`, `xcodebuild archive` builds it unsigned,
   and the `.app` is zipped into a `Payload/` → unsigned `.ipa` artifact.
   Users sideload it (Sideloadly/AltStore/TrollStore re-sign it).
 
-Therefore: **every Core change must be compilable/testable on Linux**, and the
-app target must be reviewed extra carefully since it only compiles in CI.
+Therefore: **every Core change must be compilable/testable on Linux**. Validate
+the app target on macOS locally or through CI.
 
 ## Repository layout
 
@@ -172,14 +172,6 @@ new targets or build settings do), edit `project.yml`, never the generated
 
 ## Known gaps / future work
 
-- **Open issue (mock env only?):** in the mock-transport integration test, the
-  outgoing peer connection is missing from `PeerConnectionManager.connections`
-  by the time `byteStreamDidOpen` fires, so queued messages don't flush. The
-  same flow works over real Network.framework (delegate is set before
-  `start()`, nothing removes the connection asynchronously). If you touch the
-  peer-connection lifecycle, re-check
-  `testServerSearchTriggersShareResponseOverPeerConnection` and consider
-  asserting the flush.
 - No app icon or asset catalog yet; CI builds are unsigned (sideloading tools
   re-sign).
 - iOS backgrounding: long transfers only progress while the app is

@@ -1,5 +1,4 @@
 import SwiftUI
-import SoulseekCore
 
 struct ChatView: View {
     @EnvironmentObject private var client: SoulseekClient
@@ -119,7 +118,7 @@ struct RoomChatView: View {
         .navigationTitle(room.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     showMembers = true
                 } label: {
@@ -190,7 +189,7 @@ struct RoomMembersSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Leave room") {
                         client.leaveRoom(roomHolder.room.name)
                         dismiss()
@@ -209,7 +208,7 @@ final class RoomObserver: ObservableObject {
 
     init(room: Room) {
         self.room = room
-        timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+        timer = Timer(fire: Date().addingTimeInterval(1), interval: 1, repeats: true) { [weak self] _ in
             self?.objectWillChange.send()
         }
         RunLoop.main.add(timer!, forMode: .default)
@@ -259,8 +258,7 @@ struct PrivateMessagesListView: View {
                     }
                     .swipeActions {
                         Button(role: .destructive) {
-                            client.chat.clearPrivateThread(username: username)
-                            client.chatRevision += 1
+                            client.clearPrivateThread(username: username)
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
@@ -296,7 +294,7 @@ struct PrivateChatView: View {
         .navigationTitle(username)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     showUserSheet = true
                 } label: {

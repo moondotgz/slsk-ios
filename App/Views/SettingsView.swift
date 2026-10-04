@@ -1,5 +1,4 @@
 import SwiftUI
-import SoulseekCore
 
 struct SettingsView: View {
     @EnvironmentObject private var client: SoulseekClient

@@ -13,6 +13,8 @@ public protocol ByteStream: AnyObject {
     /// by the listener) and send `initialBytes` immediately after connecting.
     func start(host: String?, port: UInt16, initialBytes: Data?)
     func send(_ data: Data)
+    /// Completion runs on the main queue after the transport processes the bytes.
+    func send(_ data: Data, completion: @escaping ((any Error)?) -> Void)
     func close()
 }
 

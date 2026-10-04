@@ -1,6 +1,5 @@
 import Foundation
 import Network
-import SoulseekCore
 
 /// Network.framework implementation of the SoulseekCore transport protocols.
 /// All delegate callbacks are delivered on the main queue.
@@ -61,11 +60,13 @@ final class TCPStream: ByteStream {
                 case .ready:
                     if let initialBytes = self.initialBytes {
                         self.initialBytes = nil
-                        self.connection?.send(content: initialBytes, completion: .contentProcessed { _ in })
+                        self.send(initialBytes)
                     }
                     self.delegate?.byteStreamDidOpen(self)
-                case .failed, .cancelled:
-                    self.delegate?.byteStream(self, didCloseWith: state.error)
+                case .failed(let error):
+                    self.delegate?.byteStream(self, didCloseWith: error)
+                case .cancelled:
+                    self.delegate?.byteStream(self, didCloseWith: nil)
                 default:
                     break
                 }
@@ -76,8 +77,22 @@ final class TCPStream: ByteStream {
     }
 
     func send(_ data: Data) {
-        guard !data.isEmpty else { return }
-        connection?.send(content: data, completion: .contentProcessed { _ in })
+        send(data) { [weak self] error in
+            if let error, let self {
+                self.delegate?.byteStream(self, didCloseWith: error)
+                self.close()
+            }
+        }
+    }
+
+    func send(_ data: Data, completion: @escaping ((any Error)?) -> Void) {
+        guard let connection else {
+            completion(SlskError.notConnected)
+            return
+        }
+        connection.send(content: data, completion: .contentProcessed { error in
+            DispatchQueue.main.async { completion(error) }
+        })
     }
 
     func close() {
@@ -119,12 +134,24 @@ final class TCPListener: ListenerService {
     private func createListener(port: UInt16) {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            bindFallback()
+        let newListener: NWListener
+        do {
+            if port == 0 {
+                newListener = try NWListener(using: params)
+            } else if let nwPort = NWEndpoint.Port(rawValue: port) {
+                newListener = try NWListener(using: params, on: nwPort)
+            } else {
+                bindFallback()
+                return
+            }
+        } catch {
+            if port != 0 {
+                bindFallback()
+            } else {
+                delegate?.listener(self, didFailWith: error)
+            }
             return
         }
-
-        let newListener = NWListener(using: params, on: nwPort)
         newListener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
             let stream = TCPStream(preConnected: connection)
@@ -141,13 +168,12 @@ final class TCPListener: ListenerService {
                     self.boundPort = bound
                     self.onPortBound?(bound)
                 }
-            case .failed:
+            case .failed(let error):
                 if port == self.requestedPort, self.requestedPort != 0 {
                     self.bindFallback()
                 } else {
                     DispatchQueue.main.async {
-                        self.delegate?.listener(self, didFailWith: state.error
-                            ?? SlskError.connectionFailed("listener failed"))
+                        self.delegate?.listener(self, didFailWith: error)
                     }
                 }
             default:

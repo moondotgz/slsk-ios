@@ -1,5 +1,4 @@
 import SwiftUI
-import SoulseekCore
 
 struct TransfersView: View {
     @EnvironmentObject private var client: SoulseekClient
@@ -23,12 +22,11 @@ struct TransfersView: View {
             }
             .navigationTitle("Transfers")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
                         if segment == 0 {
                             Button("Clear finished") {
                                 client.transfers.clearFinishedDownloads()
-                                client.transferRevision += 1
                             }
                         }
                         Button("Save now") {

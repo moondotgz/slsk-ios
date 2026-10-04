@@ -30,11 +30,12 @@ public final class TransferManager {
     private var activeDownloads: [UInt32: DownloadItem] = [:]      // token → download
     private var downloadConnections: [UInt64: DownloadItem] = [:]  // conn id → download
     private var activeUploads: [UInt32: UploadItem] = [:]          // token → upload
-    private var uploadConnections: [UInt64: (upload: UploadItem, handle: FileHandle, sent: UInt64)] = [:]
+    private var uploadConnections: [UInt64: (upload: UploadItem, handle: FileHandle)] = [:]
     private var timeoutTimers: [UUID: Timer] = [:]
     private var uploadQueueTick: Timer?
     private var saveTimer: Timer?
     private var storage: Storage?
+    var activationTimeout: TimeInterval = 45
 
     private static let chunkSize = 128 * 1024
 
@@ -46,13 +47,13 @@ public final class TransferManager {
         self.shares = shares
         loadPersisted()
 
-        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+        let timer = Timer(fire: Date().addingTimeInterval(60), interval: 60, repeats: true) { [weak self] _ in
             self?.queueMaintenanceTick()
         }
         RunLoop.main.add(timer, forMode: .default)
         uploadQueueTick = timer
 
-        let saver = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+        let saver = Timer(fire: Date().addingTimeInterval(30), interval: 30, repeats: true) { [weak self] _ in
             self?.persist()
         }
         RunLoop.main.add(saver, forMode: .default)
@@ -84,11 +85,6 @@ public final class TransferManager {
     }
 
     private func enqueueDownload(_ item: DownloadItem) {
-        guard gateway?.isUserOnline(item.username) != false || gateway == nil else {
-            item.status = .userOffline
-            notifyChanged()
-            return
-        }
         item.status = .queued
         gateway?.sendToPeer(item.username, PeerOut.queueUpload(item.virtualPath))
         notifyChanged()
@@ -113,17 +109,20 @@ public final class TransferManager {
         item.status = .cancelled
         removePartialFile(for: item)
         persist()
+        notifyChanged()
     }
 
     public func removeDownload(_ item: DownloadItem) {
         cancelDownload(item)
         downloads.removeAll { $0 === item }
         persist()
+        notifyChanged()
     }
 
     public func clearFinishedDownloads() {
         downloads.removeAll { !$0.status.isActive && $0.status != .paused }
         persist()
+        notifyChanged()
     }
 
     // MARK: Download event handlers (invoked by SoulseekClient)
@@ -179,7 +178,8 @@ public final class TransferManager {
 
     /// File connection opened by the uploader; `token` came in FileTransferInit.
     public func handleDownloadConnectionOpened(connectionID: UInt64, username: String, token: UInt32) {
-        guard let item = activeDownloads[token] else {
+        guard let item = activeDownloads[token], item.username == username,
+              !downloadConnections.values.contains(where: { $0 === item }) else {
             gateway?.closeFileConnection(connectionID)
             return
         }
@@ -193,11 +193,22 @@ public final class TransferManager {
         } else {
             existing = 0
         }
+        guard existing <= item.size else {
+            deactivateDownload(item)
+            item.status = .failed("Partial file exceeds expected size")
+            gateway?.closeFileConnection(connectionID)
+            notifyChanged()
+            return
+        }
         item.currentOffset = existing
         item.lastByteOffset = existing
         item.status = .transferring
         item.startedAt = Date()
         gateway?.sendFileOffset(connectionID, existing)
+        if existing == item.size {
+            if existing == 0 { _ = createPartialFile(at: partialURL) }
+            finishDownload(item, connectionID: connectionID)
+        }
         notifyChanged()
     }
 
@@ -205,7 +216,7 @@ public final class TransferManager {
         guard let item = downloadConnections[connectionID] else { return }
 
         let partialURL = partialFileURL(for: item)
-        guard let handle = try? FileHandle(forWritingTo: partialURL)
+        guard let handle = (try? FileHandle(forWritingTo: partialURL))
             ?? createPartialFile(at: partialURL) else {
             deactivateDownload(item)
             item.status = .failed("Local file error")
@@ -218,8 +229,15 @@ public final class TransferManager {
         let remaining = item.size > item.currentOffset ? Int(min(UInt64(data.count), item.size - item.currentOffset)) : 0
         guard remaining > 0 else { return }
         let chunk = data.prefix(remaining)
-        handle.seekToEndOfFile()
-        handle.write(chunk)
+        do {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: chunk)
+        } catch {
+            deactivateDownload(item)
+            item.status = .failed("Local file error")
+            notifyChanged()
+            return
+        }
         item.currentOffset += UInt64(chunk.count)
 
         if let startedAt = item.startedAt, item.currentOffset > item.lastByteOffset {
@@ -259,9 +277,13 @@ public final class TransferManager {
 
     private func finishDownload(_ item: DownloadItem, connectionID: UInt64?) {
         deactivateDownload(item)
-        movePartialToFinal(for: item)
-        item.status = .finished
-        item.currentOffset = item.size
+        do {
+            try movePartialToFinal(for: item)
+            item.status = .finished
+            item.currentOffset = item.size
+        } catch {
+            item.status = .failed("Could not save downloaded file")
+        }
         if let connectionID {
             gateway?.closeFileConnection(connectionID)
             downloadConnections[connectionID] = nil
@@ -284,12 +306,18 @@ public final class TransferManager {
 
     private func startTimeout(for item: TransferItem) {
         timeoutTimers[item.id]?.invalidate()
-        let timer = Timer(timeInterval: 45, repeats: false) { [weak self] _ in
+        let timer = Timer(fire: Date().addingTimeInterval(activationTimeout), interval: activationTimeout, repeats: false) { [weak self] _ in
             guard let self, item.status.isActive, item.status != .transferring else { return }
             if let download = item as? DownloadItem {
                 self.deactivateDownload(download)
                 download.status = .failed("Connection timeout")
                 self.notifyChanged()
+            } else if let upload = item as? UploadItem {
+                self.abortActiveUpload(upload, token: self.uploadToken(for: upload))
+                upload.status = .failed("Connection timeout")
+                self.gateway?.sendToPeer(upload.username, PeerOut.uploadFailed(upload.virtualPath))
+                self.checkUploadQueue()
+                self.persist()
             }
         }
         RunLoop.main.add(timer, forMode: .default)
@@ -337,7 +365,7 @@ public final class TransferManager {
 
     /// Response to our TransferRequest(upload) offer.
     public func handleTransferResponse(token: UInt32, allowed: Bool, reason: String?, from username: String) {
-        guard let item = activeUploads[token] else { return }
+        guard let item = activeUploads[token], item.username == username else { return }
 
         if allowed {
             item.status = .connecting
@@ -366,7 +394,7 @@ public final class TransferManager {
     }
 
     public func handleUploadConnectionOpened(connectionID: UInt64, username: String, token: UInt32) {
-        guard let item = activeUploads[token], item.status.isActive else {
+        guard let item = activeUploads[token], item.status.isActive, item.username == username else {
             gateway?.closeFileConnection(connectionID)
             return
         }
@@ -374,21 +402,31 @@ public final class TransferManager {
               let handle = try? FileHandle(forReadingFrom: url) else {
             abortActiveUpload(item, token: token)
             item.status = .failed("File read error.")
+            gateway?.closeFileConnection(connectionID)
             checkUploadQueue()
             return
         }
-        uploadConnections[connectionID] = (item, handle, 0)
+        uploadConnections[connectionID] = (item, handle)
         item.status = .connecting
-        timeoutTimers[item.id]?.invalidate()
-        timeoutTimers[item.id] = nil
+        startTimeout(for: item)
         notifyChanged()
     }
 
     public func handleUploadOffset(connectionID: UInt64, offset: UInt64) {
         guard let entry = uploadConnections[connectionID] else { return }
         let item = entry.upload
-        entry.handle.seek(toFileOffset: min(offset, item.size))
-        uploadConnections[connectionID]?.sent = 0
+        guard item.status == .connecting, offset <= item.size else {
+            abortUploadWithError(connectionID: connectionID, item: item)
+            return
+        }
+        do {
+            try entry.handle.seek(toOffset: offset)
+        } catch {
+            abortUploadWithError(connectionID: connectionID, item: item)
+            return
+        }
+        timeoutTimers[item.id]?.invalidate()
+        timeoutTimers[item.id] = nil
         item.currentOffset = offset
         item.lastByteOffset = offset
         item.status = .transferring
@@ -400,26 +438,31 @@ public final class TransferManager {
     private func sendNextUploadChunk(connectionID: UInt64) {
         guard let entry = uploadConnections[connectionID] else { return }
         let item = entry.upload
-        let remaining = item.size > (item.currentOffset + entry.sent) ? item.size - item.currentOffset - entry.sent : 0
+        let remaining = item.size > item.currentOffset ? item.size - item.currentOffset : 0
         guard remaining > 0 else {
             finishUpload(connectionID: connectionID, item: item)
             return
         }
 
         let length = Int(min(UInt64(TransferManager.chunkSize), remaining))
-        guard let chunk = try? entry.handle.readData(ofLength: length), !chunk.isEmpty else {
+        guard let chunk = try? entry.handle.read(upToCount: length), !chunk.isEmpty else {
             abortUploadWithError(connectionID: connectionID, item: item)
             return
         }
-        uploadConnections[connectionID]?.sent += UInt64(chunk.count)
-        item.currentOffset += UInt64(chunk.count)
-        item.speed = uploadSpeed(item: item, bytes: item.currentOffset - item.lastByteOffset)
-        gateway?.sendFileData(connectionID, chunk)
-
-        if item.currentOffset >= item.size {
-            finishUpload(connectionID: connectionID, item: item)
-        } else {
-            // Send the rest asynchronously to keep the queue responsive.
+        guard let gateway else {
+            abortUploadWithError(connectionID: connectionID, item: item)
+            return
+        }
+        gateway.sendFileData(connectionID, chunk) { [weak self] error in
+            guard let self, self.uploadConnections[connectionID]?.upload === item else { return }
+            if error != nil {
+                self.abortUploadWithError(connectionID: connectionID, item: item)
+                self.notifyChanged()
+                return
+            }
+            item.currentOffset += UInt64(chunk.count)
+            item.speed = self.uploadSpeed(item: item, bytes: item.currentOffset - item.lastByteOffset)
+            self.notifyChanged()
             DispatchQueue.main.async { [weak self] in
                 self?.sendNextUploadChunk(connectionID: connectionID)
             }
@@ -457,10 +500,13 @@ public final class TransferManager {
     }
 
     private func finishUpload(connectionID: UInt64, item: UploadItem) {
-        uploadConnections[connectionID] = nil
+        if let entry = uploadConnections.removeValue(forKey: connectionID) {
+            try? entry.handle.close()
+        }
         gateway?.closeFileConnection(connectionID)
         completeUpload(item)
         checkUploadQueue()
+        persist()
     }
 
     private func completeUpload(_ item: UploadItem) {
@@ -493,6 +539,11 @@ public final class TransferManager {
         }
         timeoutTimers[item.id]?.invalidate()
         timeoutTimers[item.id] = nil
+        for (id, entry) in uploadConnections where entry.upload === item {
+            uploadConnections[id] = nil
+            try? entry.handle.close()
+            gateway?.closeFileConnection(id)
+        }
     }
 
     private func checkUploadQueue() {
@@ -546,12 +597,9 @@ public final class TransferManager {
     }
 
     private func partialFileURL(for item: DownloadItem) -> URL {
-        let safeName = item.fileName
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
         return downloadDirectory
             .appendingPathComponent("Partials")
-            .appendingPathComponent(safeName + ".slskpart")
+            .appendingPathComponent(item.id.uuidString + ".slskpart")
     }
 
     private func createPartialFile(at url: URL) -> FileHandle? {
@@ -563,13 +611,12 @@ public final class TransferManager {
         return try? FileHandle(forWritingTo: url)
     }
 
-    private func movePartialToFinal(for item: DownloadItem) {
+    private func movePartialToFinal(for item: DownloadItem) throws {
         let partial = partialFileURL(for: item)
         let final = finalFileURL(for: item)
-        try? FileManager.default.createDirectory(at: downloadDirectory, withIntermediateDirectories: true)
-        try? FileManager.default.moveItem(at: partial, to: final)
+        try FileManager.default.createDirectory(at: downloadDirectory, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: partial, to: final)
         item.localFilePath = final.path
-        removePartialFile(for: item)
     }
 
     private func removePartialFile(for item: DownloadItem) {
@@ -605,7 +652,8 @@ public final class TransferManager {
             deactivateDownload(item)
             item.status = .userOffline
         }
-        for (connectionID, _) in uploadConnections {
+        for (connectionID, entry) in uploadConnections {
+            try? entry.handle.close()
             gateway?.closeFileConnection(connectionID)
             _ = connectionID
         }
@@ -615,6 +663,8 @@ public final class TransferManager {
         }
         activeUploads.removeAll()
         activeDownloads.removeAll()
+        for timer in timeoutTimers.values { timer.invalidate() }
+        timeoutTimers.removeAll()
         notifyChanged()
     }
 

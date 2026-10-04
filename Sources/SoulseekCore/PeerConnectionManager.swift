@@ -35,7 +35,7 @@ public protocol PeerGateway: AnyObject {
     func sendCantConnectToPeer(token: UInt32, username: String)
     @discardableResult
     func openUploadConnection(username: String, token: UInt32) -> UInt64?
-    func sendFileData(_ connectionID: UInt64, _ data: Data)
+    func sendFileData(_ connectionID: UInt64, _ data: Data, completion: @escaping ((any Error)?) -> Void)
     func sendFileOffset(_ connectionID: UInt64, _ offset: UInt64)
     func closeFileConnection(_ connectionID: UInt64)
     func sendToDistributedChildren(_ data: Data)
@@ -96,6 +96,8 @@ public final class PeerConnectionManager: PeerGateway {
         var fileState: FileState?
         var rawBuffer = Data()
         var isOpen = false
+        var uploadToken: UInt32?
+        var connectTimer: Timer?
 
         init(id: UInt64, stream: any ByteStream, kind: String) {
             self.id = id
@@ -199,11 +201,17 @@ public final class PeerConnectionManager: PeerGateway {
         if let address = session.address {
             let connection = makeFileConnection(username: username)
             connection.fileState = .awaitingOffset
+            connection.uploadToken = token
+            let timer = Timer(fire: Date().addingTimeInterval(10), interval: 10, repeats: false) { [weak self, weak connection] _ in
+                guard let self, let connection, !connection.isOpen,
+                      self.connections[connection.id] != nil else { return }
+                self.fallbackUploadConnection(connection)
+            }
+            connection.connectTimer = timer
+            RunLoop.main.add(timer, forMode: .default)
             let initial = PeerInitOut.peerInit(username: localUsername ?? "",
                                                type: ConnectionType.file) + fileInitPayload(token)
             connection.stream.start(host: address.host, port: address.port, initialBytes: initial)
-            delegate?.peerManager(self, didOpenUploadConnection: connection.id,
-                                  username: username, token: token)
             return connection.id
         }
 
@@ -236,8 +244,12 @@ public final class PeerConnectionManager: PeerGateway {
         return b.data
     }
 
-    public func sendFileData(_ connectionID: UInt64, _ data: Data) {
-        connections[connectionID]?.stream.send(data)
+    public func sendFileData(_ connectionID: UInt64, _ data: Data, completion: @escaping ((any Error)?) -> Void) {
+        guard let connection = connections[connectionID] else {
+            completion(SlskError.notConnected)
+            return
+        }
+        connection.stream.send(data, completion: completion)
     }
 
     public func sendFileOffset(_ connectionID: UInt64, _ offset: UInt64) {
@@ -249,6 +261,7 @@ public final class PeerConnectionManager: PeerGateway {
     public func closeFileConnection(_ connectionID: UInt64) {
         if let connection = connections[connectionID] {
             connections[connectionID] = nil
+            connection.connectTimer?.invalidate()
             connection.stream.close()
         }
     }
@@ -289,6 +302,7 @@ public final class PeerConnectionManager: PeerGateway {
 
     public func closeAll() {
         for connection in connections.values {
+            connection.connectTimer?.invalidate()
             connection.stream.close()
         }
         connections.removeAll()
@@ -309,7 +323,7 @@ public final class PeerConnectionManager: PeerGateway {
         pierceTokens[token] = (username, type)
         indirectRequestHandler?(username, type, token)
 
-        let timer = Timer(timeInterval: 20, repeats: false) { [weak self] _ in
+        let timer = Timer(fire: Date().addingTimeInterval(20), interval: 20, repeats: false) { [weak self] _ in
             guard let self, self.pierceTokens[token] != nil else { return }
             self.pierceTokens[token] = nil
             self.indirectTimers[token] = nil
@@ -373,43 +387,52 @@ public final class PeerConnectionManager: PeerGateway {
                                                                    type: ConnectionType.peer))
 
         let username = session.username
-        let timer = Timer(timeInterval: 10, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            guard let session = self.sessions[username], let connection = session.connection,
+        let timer = Timer(fire: Date().addingTimeInterval(10), interval: 10, repeats: false) { [weak self, weak connection] _ in
+            guard let self, let connection else { return }
+            guard let session = self.sessions[username], session.connection === connection,
                   !connection.isOpen else { return }
             self.abandon(connection: connection, session: session)
-
-            if !session.usedIndirect {
-                let token = self.tokens.next()
-                session.usedIndirect = true
-                self.pierceTokens[token] = (username, ConnectionType.peer)
-                self.indirectRequestHandler?(username, ConnectionType.peer, token)
-
-                let indirectTimer = Timer(timeInterval: 20, repeats: false) { [weak self] _ in
-                    guard let self, self.pierceTokens[token] != nil else { return }
-                    self.pierceTokens[token] = nil
-                    self.indirectTimers[token] = nil
-                    if let session = self.sessions[username] {
-                        session.isConnecting = false
-                        session.connection = nil
-                        session.pendingMessages.removeAll()
-                        self.delegate?.peerManager(self, didFailPeerConnection: username)
-                    }
-                }
-                RunLoop.main.add(indirectTimer, forMode: .default)
-                self.indirectTimers[token] = indirectTimer
-            } else {
-                session.isConnecting = false
-                session.connection = nil
-                session.pendingMessages.removeAll()
-                self.delegate?.peerManager(self, didFailPeerConnection: username)
-            }
+            self.attemptIndirectConnection(session)
         }
+        connection.connectTimer = timer
         RunLoop.main.add(timer, forMode: .default)
+    }
+
+    private func attemptIndirectConnection(_ session: PeerSession) {
+        guard !session.usedIndirect else {
+            session.isConnecting = false
+            session.pendingMessages.removeAll()
+            delegate?.peerManager(self, didFailPeerConnection: session.username)
+            return
+        }
+        let token = tokens.next()
+        let username = session.username
+        session.usedIndirect = true
+        session.isConnecting = true
+        pierceTokens[token] = (username, ConnectionType.peer)
+        indirectRequestHandler?(username, ConnectionType.peer, token)
+        let timer = Timer(fire: Date().addingTimeInterval(20), interval: 20, repeats: false) { [weak self] _ in
+            guard let self, self.pierceTokens.removeValue(forKey: token) != nil else { return }
+            self.indirectTimers[token] = nil
+            session.isConnecting = false
+            session.pendingMessages.removeAll()
+            self.delegate?.peerManager(self, didFailPeerConnection: username)
+        }
+        indirectTimers[token] = timer
+        RunLoop.main.add(timer, forMode: .default)
+    }
+
+    private func fallbackUploadConnection(_ connection: PeerConnection) {
+        guard let username = connection.username, let token = connection.uploadToken else { return }
+        connections[connection.id] = nil
+        connection.connectTimer?.invalidate()
+        connection.stream.close()
+        inviteIndirectConnection(username: username, type: ConnectionType.file, token: token)
     }
 
     private func abandon(connection: PeerConnection, session: PeerSession) {
         connections[connection.id] = nil
+        connection.connectTimer?.invalidate()
         connection.stream.close()
         if session.connection === connection {
             session.connection = nil
@@ -423,6 +446,7 @@ public final class PeerConnectionManager: PeerGateway {
         connection.isOpen = true
         connections[connection.id] = connection
         stream.delegate = self
+        stream.start(host: nil, port: 0, initialBytes: nil)
     }
 
     private func processFrame(_ connection: PeerConnection, body: Data) {
@@ -505,6 +529,8 @@ public final class PeerConnectionManager: PeerGateway {
                 // Bind the accepted connection to the session so replies
                 // reuse it instead of dialing out again.
                 let session = session(for: username)
+                session.isConnecting = false
+                session.usedIndirect = false
                 if session.connection == nil {
                     session.connection = connection
                 }
@@ -597,10 +623,16 @@ extension PeerConnectionManager: ByteStreamDelegate {
     public func byteStreamDidOpen(_ stream: any ByteStream) {
         guard let connection = connections.values.first(where: { $0.stream === stream }) else { return }
         connection.isOpen = true
+        connection.connectTimer?.invalidate()
+        if connection.kind == ConnectionType.file, let token = connection.uploadToken,
+           let username = connection.username {
+            delegate?.peerManager(self, didOpenUploadConnection: connection.id, username: username, token: token)
+        }
 
         if connection.kind == ConnectionType.peer, let username = connection.username,
            let session = sessions[username] {
             session.isConnecting = false
+            session.usedIndirect = false
             sendPendingMessages(connection, session: session)
         }
     }
@@ -614,8 +646,15 @@ extension PeerConnectionManager: ByteStreamDelegate {
         }
 
         do {
-            try connection.assembler.feed(data) { [weak self] body in
-                self?.processFrame(connection, body: body)
+            connection.assembler.append(data)
+            while let body = try connection.assembler.nextFrame() {
+                processFrame(connection, body: body)
+                guard connections[connection.id] != nil else { return }
+                if connection.kind == ConnectionType.file {
+                    let raw = connection.assembler.takePendingBytes()
+                    handleFileBytes(connection, data: raw)
+                    return
+                }
             }
         } catch {
             connections[connection.id] = nil
@@ -625,6 +664,11 @@ extension PeerConnectionManager: ByteStreamDelegate {
 
     public func byteStream(_ stream: any ByteStream, didCloseWith error: (any Error)?) {
         guard let connection = connections.values.first(where: { $0.stream === stream }) else { return }
+        connection.connectTimer?.invalidate()
+        if !connection.isOpen, connection.kind == ConnectionType.file, connection.uploadToken != nil {
+            fallbackUploadConnection(connection)
+            return
+        }
         connections[connection.id] = nil
 
         if connection.kind == ConnectionType.file {
@@ -632,7 +676,11 @@ extension PeerConnectionManager: ByteStreamDelegate {
             return
         }
         if connection.kind == ConnectionType.peer, let username = connection.username {
-            sessions[username]?.connection = nil
+            if let session = sessions[username], session.connection === connection {
+                session.connection = nil
+                if !connection.isOpen { attemptIndirectConnection(session) }
+                else { session.isConnecting = false }
+            }
         }
         if connection.kind == ConnectionType.distributed, let username = connection.username {
             delegate?.peerManager(self, distributedConnectionClosed: username)
@@ -649,4 +697,3 @@ extension PeerConnectionManager: ListenerServiceDelegate {
         listenErrorHandler?(error)
     }
 }
-

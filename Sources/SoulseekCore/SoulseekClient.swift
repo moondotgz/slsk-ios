@@ -116,6 +116,16 @@ public final class SoulseekClient: ObservableObject {
         storage.save(config, as: "config")
     }
 
+    public func removeSearchSession(token: UInt32) {
+        search.removeSession(token: token)
+        searchRevision += 1
+    }
+
+    public func clearPrivateThread(username: String) {
+        chat.clearPrivateThread(username: username)
+        chatRevision += 1
+    }
+
     private func loadPersistedState() {
         if let saved: ClientConfiguration = storage.load(ClientConfiguration.self, as: "config") {
             config = saved
@@ -217,7 +227,7 @@ public final class SoulseekClient: ObservableObject {
     private func scheduleReconnect() {
         reconnectAttempts += 1
         let delay = min(300, TimeInterval(10 * reconnectAttempts))
-        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+        let timer = Timer(fire: Date().addingTimeInterval(delay), interval: delay, repeats: false) { [weak self] _ in
             guard let self, !self.isLoggedIn else { return }
             self.reconnectAttempts = 0
             self.connect()
@@ -811,7 +821,7 @@ public final class SoulseekClient: ObservableObject {
 
     private func startPingTimer() {
         pingTimer?.invalidate()
-        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+        let timer = Timer(fire: Date().addingTimeInterval(60), interval: 60, repeats: true) { [weak self] _ in
             guard let self, self.isLoggedIn else { return }
             self.send(ServerOut.serverPing())
         }
@@ -1115,8 +1125,10 @@ extension SoulseekClient: ByteStreamDelegate {
     public func byteStream(_ stream: any ByteStream, didReceive data: Data) {
         guard stream === serverStream else { return }
         do {
-            try serverAssembler.feed(data) { [weak self] body in
-                self?.handleServerFrame(body)
+            serverAssembler.append(data)
+            while let body = try serverAssembler.nextFrame() {
+                handleServerFrame(body)
+                guard stream === serverStream else { return }
             }
         } catch {
             disconnect()

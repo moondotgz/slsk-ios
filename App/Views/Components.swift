@@ -1,5 +1,4 @@
 import SwiftUI
-import SoulseekCore
 
 // MARK: - Formatting helpers
 
@@ -201,9 +200,14 @@ struct BrowseSheet: View {
                         }
                     }
                 } else {
-                    ContentUnavailableView("Browsing \(username)",
-                                           systemImage: "folder.badge.questionmark",
-                                           description: Text("Waiting for the share list…"))
+                    VStack(spacing: 12) {
+                        Image(systemName: "folder.badge.questionmark")
+                            .font(.largeTitle)
+                        Text("Browsing \(username)")
+                            .font(.headline)
+                        Text("Waiting for the share list…")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .navigationTitle("Browse \(username)")

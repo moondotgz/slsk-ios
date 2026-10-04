@@ -4,7 +4,7 @@ A native iOS Soulseek client built with Swift/SwiftUI, implementing the
 Soulseek peer-to-peer protocol based on [Nicotine+](https://github.com/nicotine-plus/nicotine-plus)'s
 reverse engineering of the network.
 
-![CI](https://github.com/OWNER/slsk-ios/actions/workflows/build.yml/badge.svg)
+![CI](https://github.com/moondotgz/slsk-ios/actions/workflows/build.yml/badge.svg)
 
 ## Features
 
@@ -29,12 +29,21 @@ reverse engineering of the network.
 
 The repository has no committed Xcode project and releases are built in CI:
 
-1. Go to the **Actions** tab → **Build** workflow (or push to `main`).
-2. Download the **`Slsk-unsigned-ipa`** artifact.
-3. Sideload it with [Sideloadly](https://sideloadly.io/),
+1. Push this repository to GitHub, including `.github/workflows/build.yml`.
+2. Go to **Actions → Build → Run workflow**, select a branch, and run it.
+   Pushes to `main` and pull requests also trigger the workflow.
+3. Once the Linux tests and macOS build succeed, open the workflow run and
+   download **`Slsk-unsigned-ipa`** from **Artifacts**. Extract the downloaded
+   ZIP to get `Slsk-unsigned.ipa`.
+4. Sideload the IPA with [Sideloadly](https://sideloadly.io/),
    [AltStore](https://altstore.io/) (free Apple ID, 7-day resigning) or
    [TrollStore](https://github.com/opa334/TrollStore) (unsigned IPA installs
    directly on supported firmwares).
+
+The build requires no Apple Developer certificates or GitHub secrets. The IPA
+is unsigned; your sideloading tool handles signing. IPA artifacts are kept for
+30 days. If the archive fails, download **`Slsk-build-diagnostics`** for the
+Xcode log and result bundle (kept for 14 days).
 
 Downloads are stored in the app's Documents folder (visible in the Files app
 under *On My iPhone → Slsk*). Shared folders are picked from the Files app;

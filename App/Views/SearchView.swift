@@ -1,5 +1,4 @@
 import SwiftUI
-import SoulseekCore
 
 struct SearchView: View {
     @EnvironmentObject private var client: SoulseekClient
@@ -51,8 +50,7 @@ struct SearchView: View {
                             }
                             Spacer()
                             Button(role: .destructive) {
-                                client.search.removeSession(token: session.token)
-                                client.searchRevision += 1
+                                client.removeSearchSession(token: session.token)
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .foregroundStyle(.secondary)

@@ -1,6 +1,5 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import SoulseekCore
 
 /// Persists security-scoped bookmarks for shared folders so access survives
 /// relaunches (iOS sandbox requirement).

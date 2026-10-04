@@ -159,7 +159,7 @@ public final class SearchEngine {
     private func scheduleWishlist() {
         wishlistTimer?.invalidate()
         guard !savedWishlist.isEmpty else { return }
-        let timer = Timer(timeInterval: wishlistInterval, repeats: true) { [weak self] _ in
+        let timer = Timer(fire: Date().addingTimeInterval(wishlistInterval), interval: wishlistInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
             for item in self.savedWishlist {
                 let token = self.tokens.next()

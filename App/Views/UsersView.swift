@@ -1,5 +1,4 @@
 import SwiftUI
-import SoulseekCore
 
 struct UsersView: View {
     @EnvironmentObject private var client: SoulseekClient
