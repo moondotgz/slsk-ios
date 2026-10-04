@@ -198,6 +198,110 @@ final class ClientIntegrationTests: XCTestCase {
         XCTAssertTrue(codes.contains(ServerCode.roomList))
     }
 
+    func testCompressedSearchResultsOverDirectAndIndirectPeerConnections() throws {
+        for indirect in [false, true] {
+            let factory = MockTransportFactory()
+            let (client, server, directory) = makeClient(factory: factory)
+            defer { client.disconnect(); try? FileManager.default.removeItem(at: directory) }
+            login(client, server: server)
+            client.startSearch("karma police")
+            let session = try XCTUnwrap(client.search.activeSessions.first)
+            var request = MessageBuffer(try XCTUnwrap(server.sentFrames.last))
+            _ = try request.readUInt32()
+            XCTAssertEqual(try request.readUInt32(), ServerCode.fileSearch)
+            XCTAssertEqual(try request.readUInt32(), session.token)
+            XCTAssertEqual(try request.readString(), "karma police")
+
+            let peer: MockStream
+            var initial = Data()
+            if indirect {
+                var invitation = MessageBuffer()
+                invitation.writeString("searcher")
+                invitation.writeString(ConnectionType.peer)
+                invitation.writeIPAddress("127.0.0.1")
+                invitation.writeUInt32(5000)
+                invitation.writeUInt32(123)
+                server.inject(Frame.server(code: ServerCode.connectToPeer, payload: invitation.bytes))
+                pump()
+                peer = try XCTUnwrap(factory.peerStreams.last)
+                XCTAssertEqual(peer.sentFrames.first, PeerInitOut.pierceFirewall(token: 123))
+            } else {
+                peer = factory.listener.accept()
+                pump()
+                initial = PeerInitOut.peerInit(username: "searcher", type: ConnectionType.peer)
+            }
+
+            let file = RemoteFileInfo(virtualPath: "\\music\\Karma Police.mp3", size: 1234567,
+                                      bitrate: 320, duration: 240)
+            var payload = MessageBuffer()
+            payload.writeString("searcher")
+            payload.writeUInt32(session.token)
+            payload.writeUInt32(1)
+            FileListCodec.packFileInfo(file, into: &payload)
+            payload.writeBool(true)
+            payload.writeUInt32(500000)
+            payload.writeUInt32(2)
+            payload.writeUInt32(0)
+            let compressed = try Zlib.compress(payload.data)
+            let packet = initial + Frame.peer(code: PeerCode.fileSearchResponse, payload: [UInt8](compressed))
+            let revision = client.searchRevision
+            for offset in stride(from: 0, to: packet.count, by: 7) {
+                peer.inject(Data(packet[offset..<min(offset + 7, packet.count)]))
+            }
+            pump()
+            XCTAssertEqual(session.hits.count, 1)
+            XCTAssertEqual(session.hits.first?.file, file)
+            XCTAssertEqual(session.hits.first?.username, "searcher")
+            XCTAssertEqual(session.hits.first?.freeUploadSlot, true)
+            XCTAssertEqual(session.hits.first?.uploadSpeed, 500000)
+            XCTAssertEqual(session.hits.first?.queueLength, 2)
+            XCTAssertGreaterThan(client.searchRevision, revision)
+        }
+    }
+
+    func testCompressedBrowseAndFolderResponsesExcludePeerMessageCode() throws {
+        let factory = MockTransportFactory()
+        let (client, server, directory) = makeClient(factory: factory)
+        defer { client.disconnect(); try? FileManager.default.removeItem(at: directory) }
+        login(client, server: server)
+        let peer = factory.listener.accept()
+        pump()
+        peer.inject(PeerInitOut.peerInit(username: "sharer", type: ConnectionType.peer))
+        pump()
+        client.browseUser("sharer")
+        let file = RemoteFileInfo(virtualPath: "\\music\\song.mp3", size: 12345, bitrate: 320)
+        var browse = MessageBuffer()
+        browse.writeUInt32(1)
+        browse.writeString(file.folder)
+        browse.writeUInt32(1)
+        FileListCodec.packFileInfo(file, into: &browse)
+        browse.writeUInt32(0)
+        peer.inject(Frame.peer(code: PeerCode.sharedFileListResponse,
+                               payload: [UInt8](try Zlib.compress(browse.data))))
+        pump()
+        let session = try XCTUnwrap(client.browseSession(for: "sharer"))
+        XCTAssertTrue(session.isComplete)
+        XCTAssertEqual(session.folders[file.folder], [file])
+
+        var folderResult: [String: [RemoteFileInfo]]?
+        client.requestFolderContents(username: "sharer", folder: file.folder) { folderResult = $0 }
+        var request = MessageBuffer(try XCTUnwrap(peer.sentFrames.last))
+        _ = try request.readUInt32()
+        XCTAssertEqual(try request.readUInt32(), PeerCode.folderContentsRequest)
+        let token = try request.readUInt32()
+        var folder = MessageBuffer()
+        folder.writeUInt32(token)
+        folder.writeString(file.folder)
+        folder.writeUInt32(1)
+        folder.writeString(file.folder)
+        folder.writeUInt32(1)
+        FileListCodec.packFileInfo(file, into: &folder)
+        peer.inject(Frame.peer(code: PeerCode.folderContentsResponse,
+                               payload: [UInt8](try Zlib.compress(folder.data))))
+        pump()
+        XCTAssertEqual(folderResult?[file.folder], [file])
+    }
+
     func testServerSearchTriggersShareResponseOverPeerConnection() {
         let factory = MockTransportFactory()
         let (client, server, _) = makeClient(factory: factory)

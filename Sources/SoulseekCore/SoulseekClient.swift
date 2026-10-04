@@ -1160,7 +1160,9 @@ extension SoulseekClient: PeerConnectionManagerDelegate {
         case PeerCode.sharedFileListResponse:
             handleBrowseResponse(username: username, buffer: &buffer)
         case PeerCode.fileSearchResponse:
-            try? search.handleSearchResponse(username: username, body: buffer,
+            guard let decompressed = try? Zlib.decompress(Data(buffer.readRemaining()),
+                                                          maxOutput: 128 * 1024 * 1024) else { return }
+            try? search.handleSearchResponse(username: username, body: MessageBuffer(decompressed),
                                              isBanned: { [weak self] in self?.config.bannedUsers.contains($0) ?? false })
         case PeerCode.userInfoRequest:
             manager.sendToPeer(username, buildUserInfoResponse(totalUploads: 0,
@@ -1280,7 +1282,7 @@ extension SoulseekClient: PeerConnectionManagerDelegate {
     // MARK: Peer response parsing
 
     private func handleBrowseResponse(username: String, buffer: inout MessageBuffer) {
-        guard let decompressed = try? Zlib.decompress(buffer.data) else { return }
+        guard let decompressed = try? Zlib.decompress(Data(buffer.readRemaining())) else { return }
         var b = MessageBuffer(decompressed)
         let session = browseSessions[username] ?? BrowseSession(username: username)
         browseSessions[username] = session
@@ -1319,7 +1321,7 @@ extension SoulseekClient: PeerConnectionManagerDelegate {
     }
 
     private func handleFolderContentsResponse(buffer: inout MessageBuffer) {
-        guard let decompressed = try? Zlib.decompress(buffer.data) else { return }
+        guard let decompressed = try? Zlib.decompress(Data(buffer.readRemaining())) else { return }
         var b = MessageBuffer(decompressed)
         guard let token = try? b.readUInt32(),
               let directory = try? b.readString(),
