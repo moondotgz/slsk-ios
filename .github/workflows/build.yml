@@ -161,7 +161,7 @@ jobs:
             build/Slsk-unsigned.ipa assets/icon.png \
             --target "$GITHUB_SHA" \
             --title "Slsk 1.0.${GITHUB_RUN_NUMBER}" \
-            --notes "Automated main build. Unsigned IPA; sign using Flarestore or another compatible installer."
+            --notes "Automated main build. Unsigned IPA; sign using your preferred installer."
       - name: Upload Pages site
         uses: actions/upload-pages-artifact@v4
         with:
