@@ -103,6 +103,24 @@ Downloads are stored in the app's Documents folder (visible in the Files app
 under *On My iPhone → Slsk*). Shared folders are picked from the Files app;
 the app remembers them via security-scoped bookmarks.
 
+**Settings → Appearance → Customize appearance** offers six color presets,
+accent/backdrop/outgoing-chat color pickers, system/light/dark mode, four font
+styles, compact/standard/relaxed row spacing, backdrop intensity (0% turns it
+off), and a glass-control toggle. Chat timestamps and bubble roundness are
+customizable too. Changes preview live and persist across launches; reset
+restores the original theme. Dynamic Type and accessibility contrast and
+transparency settings remain respected.
+
+Interrupted downloads automatically resume from their saved partial file
+after reconnection, including unfinished downloads restored on launch.
+Connection failures retry with increasing delays (10 seconds up to 5 minutes)
+and wait while the server or uploader is offline. Pending retries remain in
+the Active list. Use **Pause automatic resume** in the download's context
+menu to stop retrying without deleting the partial file; **Retry** starts it
+again manually. Cancellation, explicit uploader denials, remote upload
+failures and local file errors do not automatically restart. iOS suspension
+still stops transfers: automatic resume is recovery, not background downloading.
+
 The iOS app stores your Soulseek password in the device's Keychain, not
 `SlskData/config.json`. Existing plaintext credentials migrate on launch:
 the configuration is rewritten without the password only after Keychain
@@ -116,11 +134,16 @@ still sends the password in plaintext.
 
 ## Development
 
-For transfer failures, reproduce the problem, then open **Settings → Transfer
-diagnostics → Copy connection log** and paste it into a bug report. You can
-also share or clear the log there. It keeps the latest 200 connection events
-in memory, including peer usernames and IP addresses, but no passwords, chat
-messages, or file contents.
+For transfer failures, reproduce the problem, then open **Settings → Connection
+& lifecycle diagnostics → Copy connection log** and paste it into a bug report.
+You can also share or clear the log there. It keeps the latest 200 events,
+including launches, active/inactive/background transitions, time away from the
+app, memory warnings, transfer/socket counts, peer usernames and IP addresses,
+but no passwords, chat messages or file contents. The log is saved locally on
+lifecycle changes and when app state is saved, so it survives relaunch; clearing
+also clears the saved copy. A sudden crash can lose events since the last save.
+The background event marks when iOS *may* suspend the app, not an exact suspension
+or termination time (iOS does not reliably report those).
 
 See [AGENTS.md](AGENTS.md) for the full architecture, protocol notes and
 build instructions. Quick version:

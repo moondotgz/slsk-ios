@@ -81,7 +81,7 @@ struct SettingsView: View {
                     Text("Downloads appear in the app folder, visible in the Files app.")
                 }
 
-                Section("Transfer diagnostics") {
+                Section("Connection & lifecycle diagnostics") {
                     Button {
                         UIPasteboard.general.string = client.connectionDiagnostics.joined(separator: "\n")
                         copiedLog = true
@@ -97,12 +97,12 @@ struct SettingsView: View {
                         client.clearConnectionDiagnostics()
                         copiedLog = false
                     }
-                    DisclosureGroup("Recent connection events") {
+                    DisclosureGroup("Recent events") {
                         Text(client.connectionDiagnostics.suffix(30).joined(separator: "\n"))
                             .font(.caption.monospaced())
                             .textSelection(.enabled)
                     }
-                    Text("The log includes peer usernames and IP addresses, but no passwords or file contents. It is kept in memory for this session.")
+                    Text("The latest 200 events include app lifecycle changes, transfer/socket counts, peer usernames and IP addresses, but no passwords, chat messages or file contents. Saved on lifecycle changes so you can share it after reopening the app. Clearing also deletes the saved log.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

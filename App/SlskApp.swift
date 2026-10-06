@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct SlskApp: App {
@@ -11,10 +12,14 @@ struct SlskApp: App {
                 .environmentObject(appState)
                 .environmentObject(appState.client)
                 .modifier(SlskTheme())
+                .onAppear {
+                    appState.recordScenePhase(scenePhase)
+                }
                 .onChange(of: scenePhase) { phase in
-                    if phase == .background {
-                        appState.client.saveAll()
-                    }
+                    appState.recordScenePhase(phase)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                    appState.client.recordAppMemoryWarning()
                 }
         }
     }
@@ -41,5 +46,16 @@ final class AppState: ObservableObject {
 
     func loggedIn() {
         needsLogin = false
+    }
+
+    func recordScenePhase(_ phase: ScenePhase) {
+        switch phase {
+        case .active: client.recordAppLifecycle(.active)
+        case .inactive: client.recordAppLifecycle(.inactive)
+        case .background:
+            client.recordAppLifecycle(.background)
+            client.saveAll()
+        @unknown default: break
+        }
     }
 }

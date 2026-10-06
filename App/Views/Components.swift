@@ -234,6 +234,7 @@ struct BrowseSheet: View {
 
 struct FolderRow: View {
     @EnvironmentObject private var client: SoulseekClient
+    @Environment(\.slskRowDensity) private var density
     let username: String
     let folder: String
     let files: [RemoteFileInfo]
@@ -295,7 +296,7 @@ struct FolderRow: View {
                 }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, density.padding)
     }
 
     private var folderName: String {
@@ -307,11 +308,12 @@ struct FolderRow: View {
 
 struct TransferRow: View {
     @EnvironmentObject private var client: SoulseekClient
+    @Environment(\.slskRowDensity) private var density
     let item: TransferItem
 
     var body: some View {
         let _ = client.transferRevision
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: density.spacing) {
             Text(item.fileName)
                 .font(.subheadline)
                 .lineLimit(1)
@@ -336,6 +338,12 @@ struct TransferRow: View {
             }
             .font(.caption)
 
+            if item.automaticResumePending {
+                Text("Will resume automatically when connected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if item.status != .transferring && item.status != .finished && item.currentOffset > 0 {
                 Text("\(Format.bytes(item.currentOffset)) / \(Format.bytes(item.size)) saved")
                     .font(.caption)
@@ -346,6 +354,6 @@ struct TransferRow: View {
                 ProgressView(value: Double(min(item.currentOffset, item.size)), total: Double(item.size))
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, density.padding)
     }
 }

@@ -90,6 +90,7 @@ open class TransferItem: Identifiable, Codable {
     public var speed: Double = 0
     public var queuePosition: UInt32 = 0
     public var queuePositionIsStale = false
+    public var automaticResumePending = false
     public var startedAt: Date?
 
     init(username: String, virtualPath: String, size: UInt64, bitrate: UInt32? = nil) {
@@ -122,6 +123,7 @@ open class TransferItem: Identifiable, Codable {
         case status
         case currentOffset
         case queuePosition
+        case automaticResumePending
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -134,6 +136,7 @@ open class TransferItem: Identifiable, Codable {
         try container.encode(status, forKey: .status)
         try container.encode(currentOffset, forKey: .currentOffset)
         try container.encode(queuePosition, forKey: .queuePosition)
+        try container.encode(automaticResumePending, forKey: .automaticResumePending)
     }
 
     public required init(from decoder: Decoder) throws {
@@ -147,6 +150,7 @@ open class TransferItem: Identifiable, Codable {
         currentOffset = try container.decodeIfPresent(UInt64.self, forKey: .currentOffset) ?? 0
         queuePosition = try container.decodeIfPresent(UInt32.self, forKey: .queuePosition) ?? 0
         queuePositionIsStale = queuePosition > 0
+        automaticResumePending = try container.decodeIfPresent(Bool.self, forKey: .automaticResumePending) ?? false
     }
 }
 

@@ -45,8 +45,8 @@ struct TransfersView: View {
 
     private var downloadList: some View {
         List {
-            let active = client.transfers.downloads.filter { $0.status.isActive }
-            let done = client.transfers.downloads.filter { !$0.status.isActive }
+            let active = client.transfers.downloads.filter { $0.status.isActive || $0.automaticResumePending }
+            let done = client.transfers.downloads.filter { !$0.status.isActive && !$0.automaticResumePending }
             if !active.isEmpty {
                 Section("Active") {
                     ForEach(active) { item in
@@ -119,6 +119,9 @@ struct TransfersView: View {
 
     @ViewBuilder
     private func downloadActions(_ item: DownloadItem) -> some View {
+        if item.automaticResumePending {
+            Button("Pause automatic resume") { client.transfers.pauseDownload(item) }
+        }
         if item.status == .finished {
             Button {
                 client.transfers.retryDownload(item)

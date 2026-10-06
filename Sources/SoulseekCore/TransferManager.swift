@@ -22,6 +22,7 @@ public final class TransferManager {
     public var onUserWatchRequested: ((String) -> Void)?
     public var onChanged: (() -> Void)?
     public var onDiagnostic: ((String) -> Void)?
+    public var canAutomaticallyResume: () -> Bool = { true }
 
     public var uploadSlots: Int = 2
     public var maxDownloadConnections: Int = 8
@@ -40,12 +41,23 @@ public final class TransferManager {
     private var timeoutTimers: [UUID: Timer] = [:]
     private var uploadQueueTick: Timer?
     private var saveTimer: Timer?
+    private var resumeTimer: Timer?
+    private var retryDates: [UUID: Date] = [:]
+    private var retryAttempts: [UUID: Int] = [:]
+    private var offlineUsers: Set<String> = []
     private var storage: Storage?
     var activationTimeout: TimeInterval = 45
 
     private static let chunkSize = 128 * 1024
 
     public init() {}
+
+    deinit {
+        resumeTimer?.invalidate()
+        uploadQueueTick?.invalidate()
+        saveTimer?.invalidate()
+        for timer in timeoutTimers.values { timer.invalidate() }
+    }
 
     public func configure(storage: Storage?, gateway: (any PeerGateway)?, shares: SharesManager?) {
         self.storage = storage
@@ -91,6 +103,8 @@ public final class TransferManager {
     }
 
     private func enqueueDownload(_ item: DownloadItem, recovering: Bool = false) {
+        retryDates[item.id] = nil
+        item.automaticResumePending = false
         onDiagnostic?("Download \(recovering ? "recovering" : "queued"): peer=\(item.username), id=\(item.id), lastQueue=\(item.queuePosition)")
         item.status = .queued
         item.queuePositionIsStale = recovering && item.queuePosition > 0
@@ -105,11 +119,21 @@ public final class TransferManager {
 
     public func retryDownload(_ item: DownloadItem) {
         guard !item.status.isActive else { return }
+        stopAutomaticResume(item)
         item.status = .queued
         enqueueDownload(item)
     }
 
+    public func pauseDownload(_ item: DownloadItem) {
+        stopAutomaticResume(item)
+        deactivateDownload(item)
+        item.status = .paused
+        persist()
+        notifyChanged()
+    }
+
     public func cancelDownload(_ item: DownloadItem) {
+        stopAutomaticResume(item)
         if let token = activeDownloads.first(where: { $0.value === item })?.key {
             activeDownloads[token] = nil
         }
@@ -133,7 +157,7 @@ public final class TransferManager {
     }
 
     public func clearFinishedDownloads() {
-        downloads.removeAll { !$0.status.isActive && $0.status != .paused }
+        downloads.removeAll { !$0.status.isActive && $0.status != .paused && !$0.automaticResumePending }
         persist()
         notifyChanged()
     }
@@ -154,7 +178,8 @@ public final class TransferManager {
 
     public func handleUploadDenied(file: String, reason: String, from username: String) {
         guard let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }),
-              item.status.isActive else { return }
+              item.status.isActive || item.automaticResumePending else { return }
+        stopAutomaticResume(item)
         deactivateDownload(item)
         item.status = .failed(reason)
         notifyChanged()
@@ -163,7 +188,8 @@ public final class TransferManager {
 
     public func handleUploadFailed(file: String, from username: String) {
         guard let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }),
-              item.status.isActive else { return }
+              item.status.isActive || item.automaticResumePending else { return }
+        stopAutomaticResume(item)
         onDiagnostic?("UploadFailed from \(username): id=\(item.id), stage=\(item.status.label), bytes=\(item.currentOffset)/\(item.size)")
         deactivateDownload(item)
         item.status = .failed("Remote upload failed")
@@ -177,8 +203,7 @@ public final class TransferManager {
         guard direction == TransferDirection.upload else { return nil }
 
         if let item = downloads.first(where: { $0.username == username && $0.virtualPath == file }),
-           (item.status.isActive || item.status == .failed("Connection timeout")
-            || item.status == .failed("Peer connection failed")), item.status != .transferring {
+           (item.status.isActive || item.automaticResumePending), item.status != .transferring {
             let key = DownloadToken(username: username, token: token)
             if let existing = activeDownloads[key], existing !== item {
                 onDiagnostic?("Rejected reused transfer token \(token) from \(username)")
@@ -194,6 +219,8 @@ public final class TransferManager {
                 item.size = fileSize
             }
             item.status = .connecting
+            item.automaticResumePending = false
+            retryDates[item.id] = nil
             item.queuePosition = 0
             item.queuePositionIsStale = false
             activeDownloads[key] = item
@@ -276,6 +303,7 @@ public final class TransferManager {
             return
         }
         item.currentOffset += UInt64(chunk.count)
+        retryAttempts[item.id] = nil
 
         if let startedAt = item.startedAt, item.currentOffset > item.lastByteOffset {
             let elapsed = max(0.5, Date().timeIntervalSince(startedAt))
@@ -299,21 +327,26 @@ public final class TransferManager {
             deactivateDownload(item)
             onDiagnostic?("Download socket closed: id=\(item.id), bytes=\(item.currentOffset)/\(item.size), error=\(error?.localizedDescription ?? "EOF")")
             item.status = .failed("Connection closed")
+            scheduleAutomaticResume(item)
             notifyChanged()
             persist()
         }
     }
 
     public func handleUserWentOffline(_ username: String) {
+        offlineUsers.insert(username)
         for item in downloads where item.username == username && item.status.isActive
             && item.status != .transferring {
             deactivateDownload(item)
             item.status = .userOffline
+            scheduleAutomaticResume(item)
         }
         notifyChanged()
     }
 
     public func handleUserOnline(_ username: String) {
+        offlineUsers.remove(username)
+        guard canAutomaticallyResume() else { return }
         for item in downloads where item.username == username && item.status == .userOffline {
             enqueueDownload(item, recovering: true)
         }
@@ -324,6 +357,7 @@ public final class TransferManager {
             && item.status != .transferring {
             deactivateDownload(item)
             item.status = .failed("Peer connection failed")
+            scheduleAutomaticResume(item)
         }
         for item in uploads where item.username == username && item.status == .connecting {
             abortActiveUpload(item, token: uploadToken(for: item))
@@ -335,6 +369,7 @@ public final class TransferManager {
     }
 
     private func finishDownload(_ item: DownloadItem, connectionID: UInt64?) {
+        stopAutomaticResume(item)
         deactivateDownload(item)
         do {
             try movePartialToFinal(for: item)
@@ -372,6 +407,7 @@ public final class TransferManager {
                 self.onDiagnostic?("Download timed out: peer=\(download.username), id=\(download.id), stage=\(download.status.label)")
                 self.deactivateDownload(download)
                 download.status = .failed("Connection timeout")
+                self.scheduleAutomaticResume(download)
                 self.notifyChanged()
                 self.persist()
             } else if let upload = item as? UploadItem {
@@ -640,11 +676,55 @@ public final class TransferManager {
     }
 
     func queueMaintenanceTick() {
+        guard canAutomaticallyResume() else { return }
         for item in downloads where item.status == .queued || item.status == .remotelyQueued {
             if timeoutTimers[item.id] == nil { startTimeout(for: item) }
             gateway?.sendToPeer(item.username, PeerOut.placeInQueueRequest(item.virtualPath))
         }
         checkUploadQueue()
+    }
+
+    private func stopAutomaticResume(_ item: DownloadItem) {
+        item.automaticResumePending = false
+        retryDates[item.id] = nil
+        retryAttempts[item.id] = nil
+    }
+
+    private func scheduleAutomaticResume(_ item: DownloadItem) {
+        item.automaticResumePending = true
+        let attempt = min(6, (retryAttempts[item.id] ?? 0) + 1)
+        retryAttempts[item.id] = attempt
+        let delay = min(300, 10 * pow(2, Double(attempt - 1)))
+        retryDates[item.id] = Date().addingTimeInterval(delay)
+        onDiagnostic?("Automatic resume scheduled: peer=\(item.username), id=\(item.id), delay=\(Int(delay))s, bytes=\(item.currentOffset)/\(item.size)")
+        startResumeTimer()
+    }
+
+    private func startResumeTimer() {
+        guard resumeTimer == nil else { return }
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            self?.automaticResumeTick()
+        }
+        resumeTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func automaticResumeTick(now: Date = Date()) {
+        guard canAutomaticallyResume() else { return }
+        for item in downloads where item.automaticResumePending && !item.status.isActive
+            && !offlineUsers.contains(item.username) {
+            guard let retryDate = retryDates[item.id], retryDate <= now else { continue }
+            guard !isIgnored(item.username) && !isBanned(item.username) else {
+                pauseDownload(item)
+                continue
+            }
+            onDiagnostic?("Automatically resuming: peer=\(item.username), id=\(item.id), bytes=\(item.currentOffset)/\(item.size)")
+            enqueueDownload(item, recovering: true)
+        }
+        if !downloads.contains(where: { $0.automaticResumePending }) {
+            resumeTimer?.invalidate()
+            resumeTimer = nil
+        }
     }
 
     // MARK: - File paths
@@ -695,7 +775,10 @@ public final class TransferManager {
         guard let storage else { return }
         if let savedDownloads = storage.load([DownloadItem].self, as: "downloads") {
             downloads = savedDownloads.filter { $0.status != .cancelled && $0.status != .filtered }
-            for item in downloads where item.status.isActive { item.status = .paused }
+            for item in downloads where item.status.isActive || item.automaticResumePending {
+                item.status = .userOffline
+                scheduleAutomaticResume(item)
+            }
         }
         if let savedUploads = storage.load([UploadItem].self, as: "uploads") {
             uploads = savedUploads.filter { $0.status == .finished }
@@ -717,10 +800,12 @@ public final class TransferManager {
     }
 
     public func serverWentOffline() {
-        for item in downloads where item.status.isActive {
+        offlineUsers.removeAll()
+        for item in downloads where item.status.isActive || item.automaticResumePending {
             deactivateDownload(item)
             item.queuePositionIsStale = item.queuePosition > 0
             item.status = .userOffline
+            if !item.automaticResumePending { scheduleAutomaticResume(item) }
         }
         for (connectionID, entry) in uploadConnections {
             try? entry.handle.close()
@@ -735,6 +820,7 @@ public final class TransferManager {
         activeDownloads.removeAll()
         for timer in timeoutTimers.values { timer.invalidate() }
         timeoutTimers.removeAll()
+        persist()
         notifyChanged()
     }
 

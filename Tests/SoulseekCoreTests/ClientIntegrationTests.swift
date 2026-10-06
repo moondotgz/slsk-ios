@@ -206,6 +206,45 @@ final class ClientIntegrationTests: XCTestCase {
         XCTAssertEqual(client.loggedInUsername, "tester")
     }
 
+    func testFailedDownloadResumesAfterServerReconnectAndUploaderWatch() throws {
+        let factory = MockTransportFactory()
+        let (client, server, directory) = makeClient(factory: factory)
+        defer {
+            client.disconnect()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        login(client, server: server)
+        client.transfers.downloadDirectory = directory.appendingPathComponent("Downloads")
+        let item = try XCTUnwrap(client.transfers.addDownload(username: "peer",
+            file: RemoteFileInfo(virtualPath: "file.bin", size: 8)))
+        _ = client.transfers.handleTransferRequest(direction: TransferDirection.upload,
+            token: 1, file: item.virtualPath, fileSize: 8, from: "peer")
+        client.transfers.handleDownloadConnectionOpened(connectionID: 999, username: "peer", token: 1)
+        client.transfers.handleDownloadData(connectionID: 999, data: Data([1, 2, 3]))
+        client.transfers.handleDownloadConnectionClosed(connectionID: 999, error: SlskError.notConnected)
+        XCTAssertTrue(item.automaticResumePending)
+
+        client.byteStream(server, didCloseWith: SlskError.notConnected)
+        XCTAssertEqual(item.status, .userOffline)
+        client.transfers.automaticResumeTick(now: Date().addingTimeInterval(600))
+        XCTAssertEqual(item.status, .userOffline)
+        client.connect()
+        pump()
+        let newServer = try XCTUnwrap(factory.serverStreams.last)
+        login(client, server: newServer)
+
+        var response = MessageBuffer()
+        response.writeString("peer")
+        response.writeBool(true)
+        response.writeUInt32(UserStatusValue.online)
+        for _ in 0..<5 { response.writeUInt32(0) }
+        newServer.inject(Frame.server(code: ServerCode.watchUser, payload: response.bytes))
+        pump()
+        XCTAssertEqual(item.status, .queued)
+        XCTAssertFalse(item.automaticResumePending)
+        XCTAssertEqual(item.currentOffset, 3)
+    }
+
     func testLoginSendsPostLoginSequence() {
         let factory = MockTransportFactory()
         let (client, server, _) = makeClient(factory: factory)

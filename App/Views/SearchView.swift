@@ -183,6 +183,7 @@ struct SearchFolderSection: View {
 
 struct HitRow: View {
     @Environment(\.slskAccent) private var accent
+    @Environment(\.slskRowDensity) private var density
     @EnvironmentObject private var client: SoulseekClient
     let hit: SearchHit
 
@@ -233,6 +234,6 @@ struct HitRow: View {
                     .foregroundStyle(hit.freeUploadSlot ? Color.green : accent)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, density.padding)
     }
 }

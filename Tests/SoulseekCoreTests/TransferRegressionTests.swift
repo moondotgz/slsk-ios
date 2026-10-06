@@ -8,6 +8,7 @@ private final class TransferGateway: PeerGateway {
     var closed: [UInt64] = []
     var pendingSend: (((any Error)?) -> Void)?
     var deferSends = false
+    var offsets: [UInt64] = []
     func sendToPeer(_ username: String, _ data: Data) { messages.append(data) }
     func requestPeerAddress(_ username: String) {}
     func peerAddress(for username: String) -> (host: String, port: UInt16)? { nil }
@@ -21,7 +22,7 @@ private final class TransferGateway: PeerGateway {
         if deferSends { pendingSend = completion }
         else { DispatchQueue.main.async { completion(nil) } }
     }
-    func sendFileOffset(_ connectionID: UInt64, _ offset: UInt64) {}
+    func sendFileOffset(_ connectionID: UInt64, _ offset: UInt64) { offsets.append(offset) }
     func closeFileConnection(_ connectionID: UInt64) { closed.append(connectionID) }
     func sendToDistributedChildren(_ data: Data) {}
     func connectToParentCandidate(username: String, host: String, port: UInt16) {}
@@ -29,6 +30,104 @@ private final class TransferGateway: PeerGateway {
 }
 
 final class TransferRegressionTests: XCTestCase {
+    func testAutomaticResumeRetainsPartialBytesAndSendsResumeOffset() throws {
+        let gateway = TransferGateway()
+        let manager = TransferManager()
+        manager.gateway = gateway
+        manager.downloadDirectory = try temporaryDirectory()
+        defer { manager.serverWentOffline() }
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 8)))
+        _ = manager.handleTransferRequest(direction: TransferDirection.upload, token: 1, file: "song", fileSize: 8, from: "peer")
+        manager.handleDownloadConnectionOpened(connectionID: 10, username: "peer", token: 1)
+        manager.handleDownloadData(connectionID: 10, data: Data([1, 2, 3]))
+        manager.handleDownloadConnectionClosed(connectionID: 10, error: SlskError.notConnected)
+        XCTAssertTrue(item.automaticResumePending)
+        XCTAssertEqual(item.currentOffset, 3)
+        manager.automaticResumeTick(now: Date().addingTimeInterval(9))
+        XCTAssertEqual(gateway.messages.count, 2)
+        manager.automaticResumeTick(now: Date().addingTimeInterval(11))
+        XCTAssertEqual(gateway.messages.count, 4)
+        XCTAssertEqual(item.status, .queued)
+        _ = manager.handleTransferRequest(direction: TransferDirection.upload, token: 2, file: "song", fileSize: 8, from: "peer")
+        manager.handleDownloadConnectionOpened(connectionID: 11, username: "peer", token: 2)
+        XCTAssertEqual(gateway.offsets, [0, 3])
+        manager.handleDownloadData(connectionID: 11, data: Data([4, 5, 6, 7, 8]))
+        XCTAssertEqual(item.status, .finished)
+        XCTAssertFalse(item.automaticResumePending)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: XCTUnwrap(item.localFilePath))), Data(1...8))
+    }
+
+    func testAutomaticRetryBacksOffAndDoesNotSendWhileServerIsOffline() throws {
+        let gateway = TransferGateway()
+        let manager = TransferManager()
+        manager.gateway = gateway
+        var online = true
+        manager.canAutomaticallyResume = { online }
+        defer { manager.serverWentOffline() }
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 8)))
+        manager.handlePeerConnectionFailed("peer")
+        manager.automaticResumeTick(now: Date().addingTimeInterval(11))
+        XCTAssertEqual(gateway.messages.count, 4)
+        manager.handlePeerConnectionFailed("peer")
+        manager.automaticResumeTick(now: Date().addingTimeInterval(11))
+        XCTAssertEqual(gateway.messages.count, 4)
+        online = false
+        manager.serverWentOffline()
+        XCTAssertEqual(item.status, .userOffline)
+        XCTAssertTrue(item.automaticResumePending)
+        manager.automaticResumeTick(now: Date().addingTimeInterval(1000))
+        manager.queueMaintenanceTick()
+        XCTAssertEqual(gateway.messages.count, 4)
+        online = true
+        manager.handleUserOnline("peer")
+        XCTAssertEqual(gateway.messages.count, 6)
+        XCTAssertEqual(item.status, .queued)
+    }
+
+    func testExplicitDenialPauseAndCancellationStopAutomaticRetry() throws {
+        for stop in ["deny", "pause", "cancel"] {
+            let gateway = TransferGateway()
+            let manager = TransferManager()
+            manager.gateway = gateway
+            let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 8)))
+            manager.handlePeerConnectionFailed("peer")
+            switch stop {
+            case "deny": manager.handleUploadDenied(file: "song", reason: "Connection closed", from: "peer")
+            case "pause": manager.pauseDownload(item)
+            default: manager.cancelDownload(item)
+            }
+            XCTAssertFalse(item.automaticResumePending)
+            manager.serverWentOffline()
+            manager.handleUserOnline("peer")
+            manager.automaticResumeTick(now: Date().addingTimeInterval(1000))
+            XCTAssertEqual(gateway.messages.count, 2)
+        }
+    }
+
+    func testClearingHistoryKeepsPendingAutomaticRetries() throws {
+        let manager = TransferManager()
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 8)))
+        manager.handlePeerConnectionFailed("peer")
+        manager.clearFinishedDownloads()
+        XCTAssertEqual(manager.downloads.count, 1)
+        XCTAssertTrue(manager.downloads.first === item)
+        manager.pauseDownload(item)
+    }
+
+    func testKnownOfflineUploaderWaitsForOnlineNotification() throws {
+        let gateway = TransferGateway()
+        let manager = TransferManager()
+        manager.gateway = gateway
+        defer { manager.serverWentOffline() }
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 8)))
+        manager.handleUserWentOffline("peer")
+        manager.automaticResumeTick(now: Date().addingTimeInterval(1000))
+        XCTAssertEqual(gateway.messages.count, 2)
+        manager.handleUserOnline("peer")
+        XCTAssertEqual(gateway.messages.count, 4)
+        XCTAssertEqual(item.status, .queued)
+    }
+
     func testServerReconnectRetainsOnlyLastKnownQueueUntilUploaderConfirms() throws {
         let manager = TransferManager()
         let gateway = TransferGateway()
@@ -172,9 +271,32 @@ final class TransferRegressionTests: XCTestCase {
         let saved = try XCTUnwrap(restored.downloads.first)
         XCTAssertEqual(saved.id, item.id)
         XCTAssertEqual(saved.currentOffset, 4)
-        XCTAssertEqual(saved.status, .paused)
+        XCTAssertEqual(saved.status, .userOffline)
+        XCTAssertTrue(saved.automaticResumePending)
         manager.serverWentOffline()
         restored.serverWentOffline()
+    }
+
+    func testPendingRetrySurvivesRelaunchButManualPauseDoesNotAutoResume() throws {
+        let storage = Storage(baseURL: try temporaryDirectory())
+        let manager = TransferManager()
+        manager.configure(storage: storage, gateway: TransferGateway(), shares: nil)
+        defer { manager.serverWentOffline() }
+        let retry = try XCTUnwrap(manager.addDownload(username: "retry", file: RemoteFileInfo(virtualPath: "song", size: 8)))
+        let paused = try XCTUnwrap(manager.addDownload(username: "paused", file: RemoteFileInfo(virtualPath: "song", size: 8)))
+        manager.pauseDownload(paused)
+        manager.handlePeerConnectionFailed("retry")
+        manager.persist()
+        let gateway = TransferGateway()
+        let restored = TransferManager()
+        restored.configure(storage: storage, gateway: gateway, shares: nil)
+        defer { restored.serverWentOffline() }
+        XCTAssertEqual(restored.downloads.first?.id, retry.id)
+        XCTAssertTrue(restored.downloads.first?.automaticResumePending == true)
+        restored.automaticResumeTick(now: Date().addingTimeInterval(11))
+        XCTAssertEqual(gateway.messages.count, 2)
+        XCTAssertEqual(restored.downloads.last?.status, .paused)
+        XCTAssertFalse(restored.downloads.last?.automaticResumePending == true)
     }
 
     func testLegacyRequestForMissingFileIsDeniedInsteadOfQueued() {

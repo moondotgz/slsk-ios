@@ -11,6 +11,10 @@ public enum ConnectionState: Equatable {
     case failed(String)
 }
 
+public enum AppLifecyclePhase: String {
+    case active, inactive, background
+}
+
 /// The complete Soulseek client: server session, peer network, transfers,
 /// search, shares, chat and the distributed network. All callbacks arrive on
 /// the main queue (transports guarantee this).
@@ -70,6 +74,8 @@ public final class SoulseekClient: ObservableObject {
     private var userInfoHandlers: [String: (String, PeerUserInfo) -> Void] = [:]
     private let folderTokens = TokenGenerator()
     private var watchedForTransfers = Set<String>()
+    private var lastAppLifecyclePhase: AppLifecyclePhase?
+    private var backgroundDate: Date?
 
     public init(factory: any TransportFactory, storage: Storage, config: ClientConfiguration,
                 passwordStore: (any PasswordStore)? = nil) {
@@ -85,8 +91,45 @@ public final class SoulseekClient: ObservableObject {
     // MARK: - Lifecycle
 
     public func start() {
+        connectionDiagnostics = Array((storage.load([String].self, as: "connection-log") ?? []).suffix(200))
         loadPersistedState()
         sharesRevision += 1
+        recordConnectionDiagnostic("App lifecycle: launched; \(lifecycleSnapshot)")
+        persistConnectionDiagnostics()
+    }
+
+    public func recordAppLifecycle(_ phase: AppLifecyclePhase, now: Date = Date()) {
+        guard lastAppLifecyclePhase != phase else { return }
+        lastAppLifecyclePhase = phase
+        var detail = ""
+        if phase == .background {
+            backgroundDate = now
+            detail = "; transfers may stop when iOS suspends the app"
+        } else if phase == .active, let backgroundDate {
+            detail = "; timeAwaySeconds=\(Int(max(0, now.timeIntervalSince(backgroundDate))))"
+            self.backgroundDate = nil
+        }
+        recordConnectionDiagnostic("App lifecycle: \(phase.rawValue); \(lifecycleSnapshot)\(detail)", at: now)
+        persistConnectionDiagnostics()
+    }
+
+    public func recordAppMemoryWarning() {
+        recordConnectionDiagnostic("App lifecycle: memory warning; \(lifecycleSnapshot)")
+        persistConnectionDiagnostics()
+    }
+
+    private var lifecycleSnapshot: String {
+        let state: String
+        switch connectionState {
+        case .disconnected: state = "disconnected"
+        case .connecting: state = "connecting"
+        case .loggingIn: state = "loggingIn"
+        case .loggedIn: state = "loggedIn"
+        case .failed: state = "failed"
+        }
+        let downloading = transfers.downloads.filter { $0.status == .transferring }.count
+        let pending = transfers.downloads.filter { $0.automaticResumePending }.count
+        return "server=\(state), activePeers=\(peerManager.activeConnectionCount), downloading=\(downloading), uploading=\(transfers.activeUploadCount), pendingResume=\(pending)"
     }
 
     public var isLoggedIn: Bool { connectionState == .loggedIn }
@@ -232,6 +275,7 @@ public final class SoulseekClient: ObservableObject {
         }
 
         // Transfers
+        transfers.canAutomaticallyResume = { [weak self] in self?.isLoggedIn == true }
         transfers.onChanged = { [weak self] in self?.transferRevision += 1 }
         transfers.onUploadFinishedSpeed = { [weak self] speed in
             self?.send(ServerOut.sendUploadSpeed(speed))
@@ -273,10 +317,15 @@ public final class SoulseekClient: ObservableObject {
 
     public func clearConnectionDiagnostics() {
         connectionDiagnostics.removeAll()
+        persistConnectionDiagnostics()
     }
 
-    private func recordConnectionDiagnostic(_ message: String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
+    private func persistConnectionDiagnostics() {
+        storage.save(connectionDiagnostics, as: "connection-log")
+    }
+
+    private func recordConnectionDiagnostic(_ message: String, at date: Date = Date()) {
+        let timestamp = ISO8601DateFormatter().string(from: date)
         connectionDiagnostics.append("\(timestamp) \(message)")
         if connectionDiagnostics.count > 200 {
             connectionDiagnostics.removeFirst(connectionDiagnostics.count - 200)
@@ -1240,6 +1289,7 @@ public final class SoulseekClient: ObservableObject {
     }
 
     public func saveAll() {
+        persistConnectionDiagnostics()
         saveConfig()
         chat.saveHistory(storage: storage)
         transfers.persist()

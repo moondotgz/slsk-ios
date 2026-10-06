@@ -342,13 +342,14 @@ struct GlobalFeedView: View {
 // MARK: - Shared chat components
 
 struct MessageList<Message: View>: View {
+    @Environment(\.slskRowDensity) private var density
     let messages: [ChatMessage]
     let bubble: (ChatMessage) -> Message
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
+                LazyVStack(alignment: .leading, spacing: density.spacing * 2) {
                     ForEach(messages) { message in
                         bubble(message)
                             .id(message.id)
@@ -370,29 +371,40 @@ struct MessageList<Message: View>: View {
 
 struct MessageBubble: View {
     @Environment(\.slskAccent) private var accent
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    @AppStorage(SlskThemeColors.chatKey) private var chatHex = ""
+    @AppStorage("appearance.chatCornerRadius") private var cornerRadius = 14.0
+    @AppStorage("appearance.showChatTimestamps") private var showTimestamps = true
     let message: ChatMessage
 
     var body: some View {
         HStack {
             if message.isSelf { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    if !message.isSelf {
-                        Text(message.username)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tint)
+                if !message.isSelf || showTimestamps {
+                    HStack(spacing: 6) {
+                        if !message.isSelf {
+                            Text(message.username)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tint)
+                        }
+                        if showTimestamps {
+                            Text(message.timestamp, style: .time)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    Text(message.timestamp, style: .time)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
                 }
                 Text(message.text)
                     .font(.subheadline)
                     .textSelection(.enabled)
             }
             .padding(10)
-            .background(message.isSelf ? accent.opacity(0.25) : Color(uiColor: .secondarySystemGroupedBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .background(message.isSelf && !reduceTransparency && contrast != .increased
+                        ? SlskThemeColors.color(from: chatHex, fallback: accent).opacity(0.25)
+                        : Color(uiColor: .secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: CGFloat(min(max(cornerRadius, 0), 28))))
             if !message.isSelf { Spacer(minLength: 40) }
         }
     }
