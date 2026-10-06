@@ -228,6 +228,9 @@ struct SettingsView: View {
 
                 Section {
                     SecureField("New password", text: $newPassword)
+                    if let message = client.credentialStorageError {
+                        Text(message).foregroundStyle(.red)
+                    }
                     Button("Change password") {
                         client.changePassword(newPassword)
                         newPassword = ""

@@ -101,6 +101,11 @@ struct LoginView: View {
                         .foregroundStyle(.red)
                 }
             }
+            if let message = client.credentialStorageError {
+                Section("Password storage") {
+                    Text(message).foregroundStyle(.red)
+                }
+            }
         }
         .slskScreen()
         .navigationTitle("Login")

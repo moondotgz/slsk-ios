@@ -39,6 +39,7 @@ public final class SoulseekClient: ObservableObject {
     @Published public private(set) var itemSimilarUsers: [String] = []
     @Published public private(set) var listenPort: UInt16 = 0
     @Published public private(set) var connectionDiagnostics: [String] = []
+    @Published public private(set) var credentialStorageError: String?
 
     // MARK: Services
 
@@ -56,6 +57,7 @@ public final class SoulseekClient: ObservableObject {
     // MARK: Internals
 
     private let factory: any TransportFactory
+    private let passwordStore: (any PasswordStore)?
     private var serverStream: (any ByteStream)?
     private var serverAssembler = FrameAssembler()
     private var reconnectAttempts = 0
@@ -69,8 +71,10 @@ public final class SoulseekClient: ObservableObject {
     private let folderTokens = TokenGenerator()
     private var watchedForTransfers = Set<String>()
 
-    public init(factory: any TransportFactory, storage: Storage, config: ClientConfiguration) {
+    public init(factory: any TransportFactory, storage: Storage, config: ClientConfiguration,
+                passwordStore: (any PasswordStore)? = nil) {
         self.factory = factory
+        self.passwordStore = passwordStore
         self.storage = storage
         self.config = config
         peerManager = PeerConnectionManager(factory: factory)
@@ -89,6 +93,20 @@ public final class SoulseekClient: ObservableObject {
 
     public func connect() {
         guard serverStream == nil else { return }
+        if config.password.isEmpty, !config.username.isEmpty, let passwordStore {
+            do {
+                config.password = try passwordStore.password(for: config.username) ?? ""
+                credentialStorageError = nil
+            } catch {
+                credentialStorageError = "Could not access Keychain. Unlock your device and try again."
+                connectionState = .failed("Could not access saved password")
+                return
+            }
+        }
+        if passwordStore != nil && config.password.isEmpty {
+            connectionState = .failed("Saved password unavailable. Please log in again.")
+            return
+        }
         recordConnectionDiagnostic("Connecting to server \(config.serverHost):\(config.serverPort)")
         reconnectTimer?.invalidate()
         reconnectTimer = nil
@@ -102,7 +120,10 @@ public final class SoulseekClient: ObservableObject {
     public func login(username: String, password: String) {
         config.username = username
         config.password = password
-        saveConfig()
+        guard saveConfig() else {
+            connectionState = .failed("Could not save credentials securely")
+            return
+        }
         connect()
     }
 
@@ -125,8 +146,24 @@ public final class SoulseekClient: ObservableObject {
         transfers.serverWentOffline()
     }
 
-    public func saveConfig() {
-        storage.save(config, as: "config")
+    @discardableResult
+    public func saveConfig() -> Bool {
+        do {
+            if !config.username.isEmpty && !config.password.isEmpty {
+                try passwordStore?.savePassword(config.password, for: config.username)
+            }
+        } catch {
+            credentialStorageError = "Could not save the password in Keychain. Unlock your device and try again."
+            return false
+        }
+        do {
+            try storage.saveChecked(config, as: "config")
+            credentialStorageError = nil
+            return true
+        } catch {
+            credentialStorageError = "Could not save configuration. Existing configuration was not replaced."
+            return false
+        }
     }
 
     public func removeSearchSession(token: UInt32) {
@@ -142,6 +179,22 @@ public final class SoulseekClient: ObservableObject {
     private func loadPersistedState() {
         if let saved: ClientConfiguration = storage.load(ClientConfiguration.self, as: "config") {
             config = saved
+            if !saved.password.isEmpty, let passwordStore {
+                do {
+                    if let existing = try passwordStore.password(for: saved.username), !existing.isEmpty {
+                        config.password = existing
+                    }
+                    saveConfig()
+                } catch {
+                    credentialStorageError = "Could not access Keychain. Unlock your device and try again."
+                }
+            } else if !saved.username.isEmpty, let passwordStore {
+                do {
+                    config.password = try passwordStore.password(for: saved.username) ?? ""
+                } catch {
+                    credentialStorageError = "Could not access Keychain. Unlock your device and try again."
+                }
+            }
         }
         chat.loadHistory(storage: storage)
         transfers.configure(storage: storage, gateway: peerManager, shares: shares)

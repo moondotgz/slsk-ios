@@ -31,10 +31,10 @@ final class AppState: ObservableObject {
             ?? URL(fileURLWithPath: NSHomeDirectory())
         let storage = Storage(baseURL: documents.appendingPathComponent("SlskData", isDirectory: true))
         let client = SoulseekClient(factory: TCPTransportFactory(), storage: storage,
-                                    config: ClientConfiguration())
+                                    config: ClientConfiguration(), passwordStore: PasswordKeychain())
         self.client = client
-        needsLogin = client.config.username.isEmpty
         client.start()
+        needsLogin = client.config.username.isEmpty || client.config.password.isEmpty
         let sharedDirectories = ShareBookmarks.shared.resolveAll()
         if !sharedDirectories.isEmpty { client.setSharedDirectories(sharedDirectories) }
     }

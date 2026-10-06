@@ -75,7 +75,10 @@ The repository has no committed Xcode project and releases are built in CI:
 
 1. Push this repository to GitHub, including `.github/workflows/build.yml`.
 2. Go to **Actions → Build → Run workflow**, select `main`, and run it.
-   Pushes to the configured branches and pull requests also trigger the workflow.
+   Code, tests, assets, build scripts and workflow changes also trigger builds
+   automatically. Documentation-only changes do not. Manual runs are always
+   available. If you require this workflow's checks for merging, path-filtered
+   documentation PRs can remain pending; account for that in branch rules.
 3. Once the Linux tests and macOS build succeed, open the workflow run and
    download **`Slsk-unsigned-ipa`** from **Artifacts**. Extract the downloaded
    ZIP to get `Slsk-unsigned.ipa`.
@@ -99,6 +102,17 @@ days).
 Downloads are stored in the app's Documents folder (visible in the Files app
 under *On My iPhone → Slsk*). Shared folders are picked from the Files app;
 the app remembers them via security-scoped bookmarks.
+
+The iOS app stores your Soulseek password in the device's Keychain, not
+`SlskData/config.json`. Existing plaintext credentials migrate on launch:
+the configuration is rewritten without the password only after Keychain
+storage succeeds. Migration/storage failures appear in Login or Settings;
+there is no new plaintext fallback. Keychain entries are device-only and
+not iCloud-synchronized. Keep the same signing identity when updating so the
+app retains access; otherwise you may need to log in again. Old copies of
+`config.json` in backups or exports are not retroactively scrubbed.
+This protects storage, not the legacy Soulseek login wire protocol, which
+still sends the password in plaintext.
 
 ## Development
 

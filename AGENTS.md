@@ -44,6 +44,7 @@ Sources/SoulseekCore/      ALL protocol + client logic (platform-independent)
   Zlib.swift               Swift wrapper over the CZlib shim
   Models.swift             TransferItem, Room, ChatMessage, SearchHit, …
   Configuration.swift      ClientConfiguration + JSON Storage
+                           PasswordStore abstraction; JSON excludes passwords
   TransportProtocols.swift ByteStream / ListenerService / TransportFactory abstractions
   PeerConnectionManager.swift  All 'P'/'D'/'F' connections, direct + indirect (pierce)
   TransferManager.swift    Download queue + upload slots state machines
@@ -54,6 +55,7 @@ Sources/SoulseekCore/      ALL protocol + client logic (platform-independent)
   SoulseekClient.swift     Orchestrator: server session + full server-message dispatch
   CompatibilityShims.swift Linux stand-ins for Combine's ObservableObject/@Published
 App/                       iOS app target (imports SoulseekCore sources directly)
+  PasswordKeychain.swift    Device-only credential storage through Security.framework
   SlskApp.swift            @main, AppState (owns SoulseekClient)
   Transport/NetworkTransport.swift  Network.framework impl of the transport protocols
   Views/                   SwiftUI views (Root, Login, Search, Transfers, Chat, Users, Shares, Settings)
@@ -134,6 +136,11 @@ sends u32 + 0xFFFFFFFF garbage" bug workaround in `FileListCodec`.
 6. **Revision counters** (`transferRevision`, `searchRevision`, …) are the
    SwiftUI refresh mechanism for mutable model classes (`TransferItem`, `Room`).
    Bump them whenever UI-visible state changes.
+7. **Credentials**: iOS injects `PasswordKeychain` through Core's `PasswordStore`.
+   Configuration decoding accepts legacy plaintext passwords for migration;
+   encoding never includes them. Only scrub a legacy config after secure
+   storage succeeds. Core without an injected store keeps passwords in memory
+   only; do not add a Linux/plaintext persistence fallback.
 
 ## How to build / test
 
