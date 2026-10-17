@@ -177,7 +177,12 @@ sends u32 + 0xFFFFFFFF garbage" bug workaround in `FileListCodec`.
    inactivity after file data has started. See recovery rules below.
 6. **Revision counters** (`transferRevision`, `searchRevision`, …) are the
    SwiftUI refresh mechanism for mutable model classes (`TransferItem`, `Room`).
-   Bump them whenever UI-visible state changes.
+   Bump them whenever UI-visible state changes. Byte progress is the exception:
+   `TransferManager.notifyProgress()` coalesces it to `progressInterval` with a
+   trailing update, because each bump re-renders every client observer and
+   per-chunk bumps throttled downloads. Status changes still notify at once.
+   Download sockets keep one open partial-file handle; `TCPStream` re-posts
+   reads off the main queue with a bounded (4 MiB) undelivered buffer.
 7. **Credentials**: iOS injects `PasswordKeychain` through Core's `PasswordStore`.
    Configuration decoding accepts legacy plaintext passwords for migration;
    encoding never includes them. Only scrub a legacy config after secure

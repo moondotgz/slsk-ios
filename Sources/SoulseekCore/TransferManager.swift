@@ -36,11 +36,14 @@ public final class TransferManager {
     }
     private var activeDownloads: [DownloadToken: DownloadItem] = [:]
     private var downloadConnections: [UInt64: DownloadItem] = [:]  // conn id → download
+    private var downloadHandles: [UInt64: FileHandle] = [:]        // conn id → open partial file
     private var activeUploads: [UInt32: UploadItem] = [:]          // token → upload
     private var uploadConnections: [UInt64: (upload: UploadItem, handle: FileHandle)] = [:]
     private var timeoutTimers: [UUID: Timer] = [:]
     private var uploadQueueTick: Timer?
     private var saveTimer: Timer?
+    private var progressTimer: Timer?
+    private var lastNotification = Date.distantPast
     private var resumeTimer: Timer?
     private var retryDates: [UUID: Date] = [:]
     private var retryAttempts: [UUID: Int] = [:]
@@ -49,6 +52,9 @@ public final class TransferManager {
     var activationTimeout: TimeInterval = 45
 
     private static let chunkSize = 128 * 1024
+    /// Byte progress republishes at most this often; every observer of the
+    /// client re-renders on each notification.
+    static let progressInterval: TimeInterval = 0.25
 
     public init() {}
 
@@ -56,6 +62,8 @@ public final class TransferManager {
         resumeTimer?.invalidate()
         uploadQueueTick?.invalidate()
         saveTimer?.invalidate()
+        progressTimer?.invalidate()
+        for (_, handle) in downloadHandles { try? handle.close() }
         for timer in timeoutTimers.values { timer.invalidate() }
     }
 
@@ -139,7 +147,7 @@ public final class TransferManager {
         }
         if let connection = downloadConnections.first(where: { $0.value === item })?.key {
             gateway?.closeFileConnection(connection)
-            downloadConnections[connection] = nil
+            unbindDownloadConnection(connection)
         }
         timeoutTimers[item.id]?.invalidate()
         timeoutTimers[item.id] = nil
@@ -279,22 +287,18 @@ public final class TransferManager {
     public func handleDownloadData(connectionID: UInt64, data: Data) {
         guard let item = downloadConnections[connectionID] else { return }
 
-        let partialURL = partialFileURL(for: item)
-        guard let handle = (try? FileHandle(forWritingTo: partialURL))
-            ?? createPartialFile(at: partialURL) else {
+        guard let handle = downloadHandles[connectionID] ?? openDownloadHandle(connectionID, item: item) else {
             deactivateDownload(item)
             item.status = .failed("Local file error")
             gateway?.closeFileConnection(connectionID)
             notifyChanged()
             return
         }
-        defer { try? handle.close() }
 
         let remaining = item.size > item.currentOffset ? Int(min(UInt64(data.count), item.size - item.currentOffset)) : 0
         guard remaining > 0 else { return }
-        let chunk = data.prefix(remaining)
+        let chunk = remaining == data.count ? data : data.prefix(remaining)
         do {
-            try handle.seekToEnd()
             try handle.write(contentsOf: chunk)
         } catch {
             deactivateDownload(item)
@@ -312,13 +316,38 @@ public final class TransferManager {
 
         if item.currentOffset >= item.size {
             finishDownload(item, connectionID: connectionID)
+        } else {
+            notifyProgress()
         }
-        notifyChanged()
+    }
+
+    /// Opened once per file socket and positioned at the end of the partial,
+    /// instead of reopening and seeking for every received chunk.
+    private func openDownloadHandle(_ connectionID: UInt64, item: DownloadItem) -> FileHandle? {
+        let partialURL = partialFileURL(for: item)
+        guard let handle = (try? FileHandle(forWritingTo: partialURL)) ?? createPartialFile(at: partialURL) else {
+            return nil
+        }
+        do {
+            try handle.seekToEnd()
+        } catch {
+            try? handle.close()
+            return nil
+        }
+        downloadHandles[connectionID] = handle
+        return handle
+    }
+
+    private func unbindDownloadConnection(_ connectionID: UInt64) {
+        downloadConnections[connectionID] = nil
+        if let handle = downloadHandles.removeValue(forKey: connectionID) {
+            try? handle.close()
+        }
     }
 
     public func handleDownloadConnectionClosed(connectionID: UInt64, error: (any Error)?) {
         guard let item = downloadConnections[connectionID] else { return }
-        downloadConnections[connectionID] = nil
+        unbindDownloadConnection(connectionID)
         guard item.status == .transferring || item.status == .connecting else { return }
 
         if item.currentOffset >= item.size, item.size > 0 {
@@ -381,7 +410,7 @@ public final class TransferManager {
         }
         if let connectionID {
             gateway?.closeFileConnection(connectionID)
-            downloadConnections[connectionID] = nil
+            unbindDownloadConnection(connectionID)
         }
         notifyChanged()
         persist()
@@ -392,7 +421,7 @@ public final class TransferManager {
             activeDownloads[token] = nil
         }
         if let connection = downloadConnections.first(where: { $0.value === item })?.key {
-            downloadConnections[connection] = nil
+            unbindDownloadConnection(connection)
             gateway?.closeFileConnection(connection)
         }
         timeoutTimers[item.id]?.invalidate()
@@ -566,12 +595,11 @@ public final class TransferManager {
             }
             item.currentOffset += UInt64(chunk.count)
             item.speed = self.uploadSpeed(item: item, bytes: item.currentOffset - item.lastByteOffset)
-            self.notifyChanged()
+            self.notifyProgress()
             DispatchQueue.main.async { [weak self] in
                 self?.sendNextUploadChunk(connectionID: connectionID)
             }
         }
-        notifyChanged()
     }
 
     private func uploadSpeed(item: UploadItem, bytes: UInt64) -> Double {
@@ -610,6 +638,7 @@ public final class TransferManager {
         gateway?.closeFileConnection(connectionID)
         completeUpload(item)
         checkUploadQueue()
+        notifyChanged()
         persist()
     }
 
@@ -796,7 +825,26 @@ public final class TransferManager {
     }
 
     private func notifyChanged() {
+        progressTimer?.invalidate()
+        progressTimer = nil
+        lastNotification = Date()
         onChanged?()
+    }
+
+    /// Coalesces byte-progress updates; a trailing notification publishes the
+    /// latest offset once the interval has elapsed.
+    private func notifyProgress() {
+        let due = lastNotification.addingTimeInterval(Self.progressInterval)
+        if Date() >= due {
+            notifyChanged()
+        } else if progressTimer == nil {
+            let timer = Timer(fire: due, interval: 0, repeats: false) { [weak self] _ in
+                self?.progressTimer = nil
+                self?.notifyChanged()
+            }
+            RunLoop.main.add(timer, forMode: .default)
+            progressTimer = timer
+        }
     }
 
     public func serverWentOffline() {

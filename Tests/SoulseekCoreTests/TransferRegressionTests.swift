@@ -451,6 +451,51 @@ final class TransferRegressionTests: XCTestCase {
         let partial = manager.downloadDirectory.appendingPathComponent("Partials/\(item.id.uuidString).slskpart")
         XCTAssertEqual(try Data(contentsOf: partial), Data([42]))
     }
+
+    func testDownloadWritesManyChunksThroughOneHandleAndCoalescesProgress() throws {
+        let manager = TransferManager()
+        manager.downloadDirectory = try temporaryDirectory()
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 1000)))
+        _ = manager.handleTransferRequest(direction: TransferDirection.upload, token: 1, file: "song", fileSize: 1000, from: "peer")
+        manager.handleDownloadConnectionOpened(connectionID: 1, username: "peer", token: 1)
+        var notifications = 0
+        manager.onChanged = { notifications += 1 }
+        for index in 0..<99 {
+            manager.handleDownloadData(connectionID: 1, data: Data(repeating: UInt8(index), count: 10))
+        }
+        XCTAssertEqual(item.currentOffset, 990)
+        XCTAssertEqual(notifications, 0)
+        manager.handleDownloadData(connectionID: 1, data: Data(repeating: 99, count: 20))
+        XCTAssertEqual(item.status, .finished)
+        XCTAssertEqual(notifications, 1, "completion publishes immediately")
+        RunLoop.main.run(until: Date().addingTimeInterval(TransferManager.progressInterval * 2))
+        XCTAssertEqual(notifications, 1, "completion cancels the pending progress update")
+        let expected = (0..<100).reduce(into: Data()) { $0.append(Data(repeating: UInt8($1), count: 10)) }
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: XCTUnwrap(item.localFilePath))), expected)
+    }
+
+    func testResumeAfterClosedSocketAppendsToPartialThroughNewHandle() throws {
+        let gateway = TransferGateway()
+        let manager = TransferManager()
+        manager.gateway = gateway
+        manager.downloadDirectory = try temporaryDirectory()
+        defer { manager.serverWentOffline() }
+        let item = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "song", size: 6)))
+        _ = manager.handleTransferRequest(direction: TransferDirection.upload, token: 1, file: "song", fileSize: 6, from: "peer")
+        manager.handleDownloadConnectionOpened(connectionID: 1, username: "peer", token: 1)
+        manager.handleDownloadData(connectionID: 1, data: Data([1, 2]))
+        manager.handleDownloadConnectionClosed(connectionID: 1, error: SlskError.notConnected)
+        manager.handleDownloadData(connectionID: 1, data: Data([9, 9]))
+        XCTAssertEqual(item.currentOffset, 2, "a closed socket's late bytes are ignored")
+        manager.retryDownload(item)
+        _ = manager.handleTransferRequest(direction: TransferDirection.upload, token: 2, file: "song", fileSize: 6, from: "peer")
+        manager.handleDownloadConnectionOpened(connectionID: 2, username: "peer", token: 2)
+        XCTAssertEqual(gateway.offsets.last, 2)
+        manager.handleDownloadData(connectionID: 2, data: Data([3, 4]))
+        manager.handleDownloadData(connectionID: 2, data: Data([5, 6]))
+        XCTAssertEqual(item.status, .finished)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: XCTUnwrap(item.localFilePath))), Data(1...6))
+    }
 }
 
 final class DownloadActivityTests: XCTestCase {

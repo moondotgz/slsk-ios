@@ -139,7 +139,7 @@ enum TestFrames {
 }
 
 final class ClientIntegrationTests: XCTestCase {
-    func testDownloadProgressPublishesEachChunkAndKeepsSavedBytesAfterFailure() throws {
+    func testDownloadProgressPublishesThrottledUpdatesAndKeepsSavedBytesAfterFailure() throws {
         let factory = MockTransportFactory()
         let (client, server, directory) = makeClient(factory: factory)
         defer { client.disconnect(); try? FileManager.default.removeItem(at: directory) }
@@ -151,12 +151,11 @@ final class ClientIntegrationTests: XCTestCase {
         client.transfers.handleDownloadConnectionOpened(connectionID: 999, username: "peer", token: 1)
         let initialRevision = client.transferRevision
         client.transfers.handleDownloadData(connectionID: 999, data: Data(repeating: 1, count: 140))
-        XCTAssertEqual(item.currentOffset, 140)
-        XCTAssertGreaterThan(client.transferRevision, initialRevision)
-        let firstChunkRevision = client.transferRevision
         client.transfers.handleDownloadData(connectionID: 999, data: Data(repeating: 2, count: 300))
         XCTAssertEqual(item.currentOffset, 440)
-        XCTAssertGreaterThan(client.transferRevision, firstChunkRevision)
+        XCTAssertEqual(client.transferRevision, initialRevision, "chunks inside one interval are coalesced")
+        RunLoop.main.run(until: Date().addingTimeInterval(TransferManager.progressInterval * 2))
+        XCTAssertGreaterThan(client.transferRevision, initialRevision, "trailing update publishes the latest offset")
         client.transfers.handleDownloadConnectionClosed(connectionID: 999, error: SlskError.notConnected)
         XCTAssertEqual(item.currentOffset, 440)
         XCTAssertEqual(item.status, .failed("Connection closed"))

@@ -14,6 +14,17 @@ final class TCPStream: ByteStream {
     private let keepAlive: Bool
     private var didOpen = false
     private static let idLock = NSLock()
+    private static let readLength = 512 * 1024
+    /// Undelivered bytes at which reading pauses until the main queue drains.
+    private static let readBufferLimit = 4 * 1024 * 1024
+
+    // Guarded by `readLock`: written on the connection queue, drained on main.
+    private let readLock = NSLock()
+    private var pendingData = Data()
+    private var pendingEnd = false
+    private var pendingError: (any Error)?
+    private var deliveryScheduled = false
+    private var readPaused = false
     private static var nextID: UInt64 = 0
 
     static func allocateID() -> UInt64 {
@@ -140,19 +151,63 @@ final class TCPStream: ByteStream {
 
     private func receiveNext() {
         guard let connection else { return }
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 512 * 1024) { [weak self, weak connection] data, _, isComplete, error in
-            guard let self else { return }
-            DispatchQueue.main.async {
-                guard let connection, self.connection === connection else { return }
-                if let data, !data.isEmpty {
-                    self.delegate?.byteStream(self, didReceive: data)
-                }
-                if isComplete || error != nil {
-                    self.finish(error: error)
+        receive(on: connection)
+    }
+
+    /// The next read is posted from the connection queue rather than after a
+    /// main-queue round trip, so the TCP window keeps draining while the main
+    /// queue is busy. Received bytes are coalesced into one main-queue delivery.
+    private func receive(on connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: Self.readLength) { [weak self, weak connection] data, _, isComplete, error in
+            guard let self, let connection else { return }
+            let ended = isComplete || error != nil
+            self.readLock.lock()
+            if let data, !data.isEmpty {
+                if self.pendingData.isEmpty {
+                    self.pendingData = data
                 } else {
-                    self.receiveNext()
+                    self.pendingData.append(data)
                 }
             }
+            if ended {
+                self.pendingEnd = true
+                self.pendingError = error
+            }
+            let schedule = !self.deliveryScheduled
+            self.deliveryScheduled = true
+            let keepReading = !ended && self.pendingData.count < Self.readBufferLimit
+            if !ended && !keepReading { self.readPaused = true }
+            self.readLock.unlock()
+
+            if schedule {
+                DispatchQueue.main.async { self.deliverPending(from: connection) }
+            }
+            if keepReading { self.receive(on: connection) }
+        }
+    }
+
+    private func deliverPending(from connection: NWConnection) {
+        readLock.lock()
+        let data = pendingData
+        pendingData = Data()
+        let ended = pendingEnd
+        let endError = pendingError
+        pendingEnd = false
+        pendingError = nil
+        let resume = readPaused
+        readPaused = false
+        deliveryScheduled = false
+        readLock.unlock()
+
+        guard self.connection === connection else { return }
+        if !data.isEmpty {
+            delegate?.byteStream(self, didReceive: data)
+        }
+        guard self.connection === connection else { return }
+        if ended {
+            finish(error: endError)
+        } else if resume {
+            receive(on: connection)
         }
     }
 }
