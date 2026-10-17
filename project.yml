@@ -46,6 +46,8 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        BGTaskSchedulerPermittedIdentifiers:
+          - app.slsk.ios.downloads.continued
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         ITSAppUsesNonExemptEncryption: false

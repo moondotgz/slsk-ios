@@ -92,6 +92,7 @@ Sources/SoulseekCore/      ALL protocol + client logic (platform-independent)
   CompatibilityShims.swift Linux stand-ins for Combine's ObservableObject/@Published
 App/                       iOS app target (imports SoulseekCore sources directly)
   PasswordKeychain.swift    Device-only credential storage through Security.framework
+  BackgroundTransferCoordinator.swift  Grace-period + iOS 26 BGContinuedProcessingTask bridge
   SlskApp.swift            @main, AppState, scene-phase/memory-warning logging
   Transport/NetworkTransport.swift  Network.framework impl of the transport protocols
   Views/                   SwiftUI views (Root, Login, Search, Transfers, Chat, Users, Shares, Settings)
@@ -249,8 +250,8 @@ sends u32 + 0xFFFFFFFF garbage" bug workaround in `FileListCodec`.
   or termination. Do not fabricate termination events or promise background
   downloads. Automatic resume is recovery when execution resumes, not a
   background-execution entitlement; a Live Activity would display progress,
-  not keep Soulseek sockets alive. Neither background transfer execution nor
-  a Live Activity is currently implemented.
+  not keep Soulseek sockets alive. Background execution is limited to the best-effort
+  bridge described under Known gaps; no Live Activity exists.
 
 ## Appearance and accessibility
 
@@ -378,11 +379,14 @@ Script and workflow-filter tests are under `scripts/tests/`.
 - The app icon is generated from `assets/icon.png` by `scripts/prepare_icon.py`.
   CI builds remain unsigned (sideloading tools re-sign). Successful main builds
   publish release IPAs and a GitHub Pages AltStore-compatible update source.
-- Background transfer execution and Live Activities are not implemented.
-  Long transfers require the foreground; lifecycle logging and automatic
-  resume do not change that. Do not introduce fake background audio to keep
-  sockets alive. A future background-task bridge has a limited execution
-  window and must not be described as unlimited background downloading.
+- Background execution is best-effort only (`BackgroundTransferCoordinator`):
+  a `beginBackgroundTask` grace period on all versions and, on iOS 26+, a
+  `BGContinuedProcessingTask` (`app.slsk.ios.downloads.continued`, permitted in
+  `project.yml`) submitted from the foreground while downloads are in flight
+  (`TransferManager.downloadActivity`; remotely queued downloads do not count).
+  The OS may expire either; automatic resume then recovers on return. It is not
+  unlimited background downloading and is unverified on device. Live Activities
+  are not implemented. Do not introduce fake background audio to keep sockets alive.
 - UPnP/NAT-PMP port mapping is not implemented. The client relies on indirect
   ConnectToPeer when its listener is unreachable; this cannot guarantee a
   connection when both peers are unreachable (especially behind cellular NAT).

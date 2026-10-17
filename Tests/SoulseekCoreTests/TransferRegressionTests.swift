@@ -452,3 +452,25 @@ final class TransferRegressionTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: partial), Data([42]))
     }
 }
+
+final class DownloadActivityTests: XCTestCase {
+    func testActivityCountsInFlightAndResumePendingButNotRemotelyQueuedOrPaused() throws {
+        let manager = TransferManager()
+        manager.gateway = TransferGateway()
+        manager.downloadDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { manager.serverWentOffline() }
+        XCTAssertTrue(manager.downloadActivity.isEmpty)
+        let queued = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "a", size: 10)))
+        queued.status = .remotelyQueued
+        XCTAssertTrue(manager.downloadActivity.isEmpty)
+        let active = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "b", size: 10)))
+        active.status = .transferring
+        active.currentOffset = 4
+        let pending = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "c", size: 20)))
+        pending.status = .queued
+        pending.automaticResumePending = true
+        let paused = try XCTUnwrap(manager.addDownload(username: "peer", file: RemoteFileInfo(virtualPath: "d", size: 5)))
+        paused.status = .paused
+        XCTAssertEqual(manager.downloadActivity, DownloadActivity(count: 2, completedBytes: 4, totalBytes: 30))
+    }
+}

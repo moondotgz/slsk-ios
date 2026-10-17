@@ -825,6 +825,25 @@ public final class TransferManager {
     }
 
     public var activeUploadCount: Int { activeUploads.count }
+
+    /// Downloads that are making, or about to resume, progress. Remotely queued
+    /// downloads are excluded: they wait on the uploader indefinitely and must
+    /// not keep an OS background task alive.
+    public var downloadActivity: DownloadActivity {
+        var activity = DownloadActivity()
+        for item in downloads {
+            let inFlight: Bool
+            switch item.status {
+            case .gettingAddress, .connecting, .transferring: inFlight = true
+            default: inFlight = item.automaticResumePending
+            }
+            guard inFlight else { continue }
+            activity.count += 1
+            activity.totalBytes += item.size
+            activity.completedBytes += min(item.currentOffset, item.size)
+        }
+        return activity
+    }
     public var queuedUploadCount: Int { uploads.filter { $0.status == .queued }.count }
 }
 
@@ -832,4 +851,11 @@ extension URL {
     var fileSize: UInt64 {
         (try? resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(UInt64.init) ?? 0
     }
+}
+
+public struct DownloadActivity: Equatable {
+    public var count = 0
+    public var completedBytes: UInt64 = 0
+    public var totalBytes: UInt64 = 0
+    public var isEmpty: Bool { count == 0 }
 }

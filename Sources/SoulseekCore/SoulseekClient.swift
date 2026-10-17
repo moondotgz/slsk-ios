@@ -113,6 +113,13 @@ public final class SoulseekClient: ObservableObject {
         persistConnectionDiagnostics()
     }
 
+    /// Logs OS background-execution events (grace period, continued task) with
+    /// the usual snapshot. Never pass user content here.
+    public func recordBackgroundExecution(_ detail: String) {
+        recordConnectionDiagnostic("Background execution: \(detail); \(lifecycleSnapshot)")
+        persistConnectionDiagnostics()
+    }
+
     public func recordAppMemoryWarning() {
         recordConnectionDiagnostic("App lifecycle: memory warning; \(lifecycleSnapshot)")
         persistConnectionDiagnostics()
@@ -133,6 +140,8 @@ public final class SoulseekClient: ObservableObject {
     }
 
     public var isLoggedIn: Bool { connectionState == .loggedIn }
+
+    public var downloadActivity: DownloadActivity { transfers.downloadActivity }
 
     public func connect() {
         guard serverStream == nil else { return }

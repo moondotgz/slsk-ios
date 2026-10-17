@@ -29,6 +29,7 @@ struct SlskApp: App {
 @MainActor
 final class AppState: ObservableObject {
     let client: SoulseekClient
+    private let backgroundTransfers: BackgroundTransferCoordinator
     @Published var needsLogin: Bool
 
     init() {
@@ -39,6 +40,7 @@ final class AppState: ObservableObject {
                                     config: ClientConfiguration(), passwordStore: PasswordKeychain())
         self.client = client
         client.start()
+        backgroundTransfers = BackgroundTransferCoordinator(client: client)
         needsLogin = client.config.username.isEmpty || client.config.password.isEmpty
         let sharedDirectories = ShareBookmarks.shared.resolveAll()
         if !sharedDirectories.isEmpty { client.setSharedDirectories(sharedDirectories) }
@@ -50,11 +52,14 @@ final class AppState: ObservableObject {
 
     func recordScenePhase(_ phase: ScenePhase) {
         switch phase {
-        case .active: client.recordAppLifecycle(.active)
+        case .active:
+            client.recordAppLifecycle(.active)
+            backgroundTransfers.appDidBecomeActive()
         case .inactive: client.recordAppLifecycle(.inactive)
         case .background:
             client.recordAppLifecycle(.background)
             client.saveAll()
+            backgroundTransfers.appDidEnterBackground()
         @unknown default: break
         }
     }
