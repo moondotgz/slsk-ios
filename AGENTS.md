@@ -82,6 +82,7 @@ Sources/SoulseekCore/      ALL protocol + client logic (platform-independent)
   Configuration.swift      ClientConfiguration + JSON Storage
                            PasswordStore abstraction; JSON excludes passwords
   TransportProtocols.swift ByteStream / ListenerService / TransportFactory abstractions
+  PortMapping.swift        NAT-PMP + UPnP IGD codecs and the PortMapper lease state machine
   PeerConnectionManager.swift  All 'P'/'D'/'F' connections, direct + indirect (pierce)
   TransferManager.swift    Download queue + upload slots state machines
   SearchEngine.swift       Search sessions, de-dup, filters, wishlist
@@ -95,6 +96,7 @@ App/                       iOS app target (imports SoulseekCore sources directly
   BackgroundTransferCoordinator.swift  Grace-period + iOS 26 BGContinuedProcessingTask bridge
   SlskApp.swift            @main, AppState, scene-phase/memory-warning logging
   Transport/NetworkTransport.swift  Network.framework impl of the transport protocols
+  Transport/PortMappingTransport.swift  Wi-Fi gateway lookup, unicast UDP and HTTP for PortMapper
   Views/                   SwiftUI views (Root, Login, Search, Transfers, Chat, Users, Shares, Settings)
     ThemeSettings.swift    AppStorage appearance preferences + live-preview settings
     LiquidGlassTheme.swift Shared backdrop, glass surfaces and buttons
@@ -392,9 +394,18 @@ Script and workflow-filter tests are under `scripts/tests/`.
   The OS may expire either; automatic resume then recovers on return. It is not
   unlimited background downloading and is unverified on device. Live Activities
   are not implemented. Do not introduce fake background audio to keep sockets alive.
-- UPnP/NAT-PMP port mapping is not implemented. The client relies on indirect
-  ConnectToPeer when its listener is unreachable; this cannot guarantee a
-  connection when both peers are unreachable (especially behind cellular NAT).
+- Router port forwarding (`PortMapper`, on by default, Settings toggle) tries
+  NAT-PMP, then UPnP IGD, on Wi-Fi only. SSDP is sent unicast to the gateway
+  because iOS multicast needs a restricted entitlement, so routers that only
+  answer multicast M-SEARCH are not found. Only a description and control URL
+  hosted on the gateway are used. The mapped external port is advertised with
+  SetWaitPort; disabling re-advertises the listener port. Leases renew at half
+  their lifetime; a failed mapping is retried on login, listener rebind and
+  app activation (e.g. after the Local Network prompt). It needs
+  `NSLocalNetworkUsageDescription` and ATS local networking in `project.yml`,
+  and is unverified against real routers. Behind cellular/carrier NAT the
+  client still relies on indirect ConnectToPeer, which cannot connect two
+  unreachable peers.
 - Buddy-based permission levels (buddy/trusted shares), upload speed limits,
   private-room operator UI niceties, and wishlist filter UI are simplified.
 - The default server is `server.slsknet.org:2242`; host/port can be edited on

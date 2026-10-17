@@ -52,4 +52,10 @@ public protocol TransportFactory: AnyObject {
     func makeServerStream() -> any ByteStream
     func makePeerStream() -> any ByteStream
     func makeListener() -> any ListenerService
+    /// Router port forwarding; nil where unsupported (e.g. Linux tests).
+    func makePortMappingTransport() -> (any PortMappingTransport)?
+}
+
+public extension TransportFactory {
+    func makePortMappingTransport() -> (any PortMappingTransport)? { nil }
 }

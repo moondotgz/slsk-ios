@@ -300,4 +300,8 @@ final class TCPTransportFactory: TransportFactory {
     func makeListener() -> any ListenerService {
         TCPListener()
     }
+
+    func makePortMappingTransport() -> (any PortMappingTransport)? {
+        NetworkPortMappingTransport()
+    }
 }

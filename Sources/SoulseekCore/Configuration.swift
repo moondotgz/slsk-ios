@@ -7,6 +7,7 @@ public struct ClientConfiguration: Codable {
     public var serverHost: String = "server.slsknet.org"
     public var serverPort: UInt16 = 2242
     public var listenPort: UInt16 = 2234
+    public var enablePortMapping: Bool = true
 
     public var downloadFolderName: String = "Downloads"
     public var uploadSlots: Int = 2
@@ -32,7 +33,7 @@ public struct ClientConfiguration: Codable {
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case username, serverHost, serverPort, listenPort, downloadFolderName
+        case username, serverHost, serverPort, listenPort, enablePortMapping, downloadFolderName
         case uploadSlots, maxDownloadConnections, userInfoDescription, userInfoPictureName, away
         case buddies, bannedUsers, ignoredUsers, likes, hates, wishlist, autoJoinRooms, shareFolderNames
     }
@@ -48,6 +49,7 @@ public struct ClientConfiguration: Codable {
         serverHost = try c.decodeIfPresent(String.self, forKey: .serverHost) ?? serverHost
         serverPort = try c.decodeIfPresent(UInt16.self, forKey: .serverPort) ?? serverPort
         listenPort = try c.decodeIfPresent(UInt16.self, forKey: .listenPort) ?? listenPort
+        enablePortMapping = try c.decodeIfPresent(Bool.self, forKey: .enablePortMapping) ?? enablePortMapping
         downloadFolderName = try c.decodeIfPresent(String.self, forKey: .downloadFolderName) ?? downloadFolderName
         uploadSlots = try c.decodeIfPresent(Int.self, forKey: .uploadSlots) ?? uploadSlots
         maxDownloadConnections = try c.decodeIfPresent(Int.self, forKey: .maxDownloadConnections) ?? maxDownloadConnections

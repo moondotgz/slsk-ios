@@ -42,6 +42,7 @@ public final class SoulseekClient: ObservableObject {
     @Published public private(set) var itemRecommendations: [Recommendation] = []
     @Published public private(set) var itemSimilarUsers: [String] = []
     @Published public private(set) var listenPort: UInt16 = 0
+    @Published public private(set) var portMappingStatus: PortMappingStatus = .disabled
     @Published public private(set) var connectionDiagnostics: [String] = []
     @Published public private(set) var credentialStorageError: String?
 
@@ -53,6 +54,7 @@ public final class SoulseekClient: ObservableObject {
     public let distributed = DistributedManager()
     public let peerManager: PeerConnectionManager
     public let transfers: TransferManager
+    public let portMapper: PortMapper?
     /// Active configuration. Mutable so the UI can edit it; persist with
     /// `saveConfig()`.
     public var config: ClientConfiguration
@@ -85,7 +87,9 @@ public final class SoulseekClient: ObservableObject {
         self.config = config
         peerManager = PeerConnectionManager(factory: factory)
         transfers = TransferManager()
+        portMapper = factory.makePortMappingTransport().map { PortMapper(transport: $0) }
         wireServices()
+        portMappingStatus = portMapper != nil && config.enablePortMapping ? .idle : .disabled
     }
 
     // MARK: - Lifecycle
@@ -196,6 +200,34 @@ public final class SoulseekClient: ObservableObject {
         isGlobalRoomFeedEnabled = false
         search.setWishlistInterval(0)
         transfers.serverWentOffline()
+        portMapper?.stop()
+    }
+
+    /// Enables or disables router port forwarding (UPnP / NAT-PMP).
+    public func setPortMappingEnabled(_ enabled: Bool) {
+        config.enablePortMapping = enabled
+        saveConfig()
+        if enabled {
+            refreshPortMapping()
+        } else {
+            portMapper?.stop(status: .disabled)
+            if isLoggedIn, listenPort != 0 { send(ServerOut.setWaitPort(UInt32(listenPort))) }
+        }
+    }
+
+    /// Retries a failed mapping, e.g. after the user answers the Local Network
+    /// prompt or joins Wi-Fi while the app was in the background.
+    public func retryPortMappingIfUnavailable() {
+        if case .unavailable = portMappingStatus { refreshPortMapping() }
+    }
+
+    private func refreshPortMapping() {
+        guard let portMapper, config.enablePortMapping else {
+            portMappingStatus = .disabled
+            return
+        }
+        guard isLoggedIn, listenPort != 0 else { return }
+        portMapper.start(internalPort: listenPort)
     }
 
     @discardableResult
@@ -277,10 +309,21 @@ public final class SoulseekClient: ObservableObject {
             self.recordConnectionDiagnostic("Listener bound on port \(port)")
             self.listenPort = port
             self.send(ServerOut.setWaitPort(UInt32(port)))
+            self.refreshPortMapping()
         }
         peerManager.listenErrorHandler = { [weak self] error in
             self?.recordConnectionDiagnostic("Listener failed: \(error)")
             self?.listenPort = 0
+        }
+
+        portMapper?.onDiagnostic = { [weak self] in self?.recordConnectionDiagnostic($0) }
+        portMapper?.onStatusChanged = { [weak self] status in
+            guard let self else { return }
+            self.portMappingStatus = status
+            // Peers reach us through the router's port, which may differ from the listener's.
+            if case let .mapped(_, externalPort) = status, self.isLoggedIn, externalPort != self.listenPort {
+                self.send(ServerOut.setWaitPort(UInt32(externalPort)))
+            }
         }
 
         // Transfers
@@ -723,6 +766,7 @@ public final class SoulseekClient: ObservableObject {
         peerManager.startListening(port: config.listenPort)
         listenPort = peerManager.boundPort
         send(ServerOut.setWaitPort(UInt32(peerManager.boundPort)))
+        refreshPortMapping()
         send(ServerOut.checkPrivileges())
         distributed.announceInitialState()
         updateAcceptChildren()

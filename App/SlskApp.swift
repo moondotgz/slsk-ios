@@ -55,6 +55,7 @@ final class AppState: ObservableObject {
         case .active:
             client.recordAppLifecycle(.active)
             backgroundTransfers.appDidBecomeActive()
+            client.retryPortMappingIfUnavailable()
         case .inactive: client.recordAppLifecycle(.inactive)
         case .background:
             client.recordAppLifecycle(.background)

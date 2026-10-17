@@ -51,6 +51,9 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         ITSAppUsesNonExemptEncryption: false
+        NSLocalNetworkUsageDescription: Slsk asks your router (UPnP or NAT-PMP) to forward its listening port so other Soulseek users can connect to you.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
 
 schemes:
   Slsk:
