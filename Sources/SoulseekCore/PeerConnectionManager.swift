@@ -705,6 +705,12 @@ public final class PeerConnectionManager: PeerGateway {
 
     private func handleFileBytes(_ connection: PeerConnection, data: Data) {
         guard var state = connection.fileState else { return }
+        if case .receivingData = state, connection.rawBuffer.isEmpty {
+            if !data.isEmpty {
+                delegate?.peerManager(self, didReceiveFileData: connection.id, data: data)
+            }
+            return
+        }
         connection.rawBuffer.append(data)
 
         func takeBytes(_ count: Int) -> Data? {

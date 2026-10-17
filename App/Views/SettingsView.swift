@@ -54,11 +54,23 @@ struct SettingsView: View {
                 Section {
                     LabeledContent("Server", value: "\(client.config.serverHost):\(client.config.serverPort)")
                     LabeledContent("Listen port", value: "\(client.listenPort)")
+                    Toggle("Router port forwarding", isOn: Binding(
+                        get: { client.config.enablePortMapping },
+                        set: { client.setPortMappingEnabled($0) }
+                    ))
+                    LabeledContent("Port forwarding") {
+                        Text(client.portMappingStatus.label)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
                     LabeledContent("Privileges remaining") {
                         Text(privilegesText)
                     }
                 } header: {
                     Text("Network")
+                } footer: {
+                    Text("Asks your Wi-Fi router to forward the listen port using NAT-PMP or UPnP, so more peers can connect to you directly. Requires Local Network access; not possible on cellular.")
                 }
 
                 Section {
