@@ -80,6 +80,9 @@ public struct FrameAssembler {
         return nil
     }
 
+    /// True when no partial frame is buffered.
+    public var isEmpty: Bool { pending.isEmpty }
+
     public mutating func takePendingBytes() -> Data {
         let bytes = Data(pending)
         pending.removeAll()

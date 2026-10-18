@@ -417,7 +417,19 @@ final class ClientIntegrationTests: XCTestCase {
             XCTAssertEqual(session.hits.first?.uploadSpeed, 500000)
             XCTAssertEqual(session.hits.first?.queueLength, 2)
             XCTAssertGreaterThan(client.searchRevision, revision)
+            XCTAssertEqual(client.peerManager.activeConnectionCount, 0,
+                           "result-only peer sockets close instead of filling the connection limit")
         }
+    }
+
+    func testSearchWhileLoggedOutCreatesNoOrphanSession() {
+        let factory = MockTransportFactory()
+        let (client, _, directory) = makeClient(factory: factory)
+        defer { client.disconnect(); try? FileManager.default.removeItem(at: directory) }
+        XCTAssertFalse(client.startSearch("karma police"))
+        XCTAssertFalse(client.searchUser("peer", query: "karma"))
+        XCTAssertFalse(client.searchRoom("room", query: "karma"))
+        XCTAssertTrue(client.search.activeSessions.isEmpty)
     }
 
     func testCompressedBrowseAndFolderResponsesExcludePeerMessageCode() throws {

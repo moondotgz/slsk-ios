@@ -93,6 +93,35 @@ final class ProtocolAuditTests: XCTestCase {
         XCTAssertEqual(requests.count, 3)
     }
 
+    func testSearchResultsGroupPerUserAndFolder() throws {
+        let search = SearchEngine()
+        let session = try XCTUnwrap(search.startSearch("song"))
+        func respond(_ username: String, _ paths: [String]) throws {
+            var result = MessageBuffer()
+            result.writeString(username)
+            result.writeUInt32(session.token)
+            result.writeUInt32(UInt32(paths.count))
+            for path in paths {
+                FileListCodec.packFileInfo(RemoteFileInfo(virtualPath: path, size: 10), into: &result)
+            }
+            result.writeBool(username == "beta")
+            result.writeUInt32(10)
+            result.writeUInt32(0)
+            try search.handleSearchResponse(username: username, body: result, isBanned: { _ in false })
+        }
+        try respond("alpha", ["\\music\\a\\song1.mp3", "\\music\\a\\song2.mp3", "\\music\\b\\song.mp3"])
+        try respond("beta", ["\\music\\a\\song1.mp3"])
+        try respond("alpha", ["\\music\\a\\song1.mp3"])
+        XCTAssertEqual(session.hits.count, 4)
+        XCTAssertEqual(session.groups.map(\.id), ["alpha|\\music\\a", "alpha|\\music\\b", "beta|\\music\\a"])
+        XCTAssertEqual(session.groups.map { $0.hits.count }, [2, 1, 1])
+        XCTAssertEqual(session.groups.map(\.hasFreeSlot), [false, false, true])
+        session.removeResults(from: "alpha")
+        XCTAssertEqual(session.groups.map(\.id), ["beta|\\music\\a"])
+        try respond("alpha", ["\\music\\c\\song.mp3"])
+        XCTAssertEqual(session.groups.last?.username, "alpha")
+    }
+
     func testDistributedAdoptionAnnouncesParentAndRecoversWhenParentDisconnects() throws {
         let distributed = DistributedManager()
         distributed.localUsername = "self"

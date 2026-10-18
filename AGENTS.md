@@ -208,6 +208,12 @@ sends u32 + 0xFFFFFFFF garbage" bug workaround in `FileListCodec`.
   and at most 16 search-response-only sessions. Address updates cache addresses;
   they must not eagerly connect to every search peer. Reuse P sessions and
   deduplicate distributed parent candidates.
+- As in Nicotine+ `slskproto.py`, a P socket is closed silently after a
+  FileSearchResponse unless we have sent on it, have queued messages for it,
+  or hold a partial frame. Otherwise result-only sockets fill the 48 non-file
+  slots and later responders are refused. Search results are stored per
+  (user, folder) group, capped at `SearchSession.maximumStoredResults`, and
+  `searchRevision` is coalesced like transfer progress.
 - Peer maintenance expires idle P sockets after 60 seconds and unopened,
   unidentified, or unfinished file-handshake sockets after 30 seconds. Do not
   apply those idle limits to actively receiving file data or an adopted D tree

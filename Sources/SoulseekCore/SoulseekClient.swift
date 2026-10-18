@@ -70,6 +70,11 @@ public final class SoulseekClient: ObservableObject {
     private var reconnectTimer: Timer?
     private var pingTimer: Timer?
     private var serverLoginDate: Date?
+    private var searchNotificationTimer: Timer?
+    private var lastSearchNotification = Date.distantPast
+    /// Popular queries deliver hundreds of responses per second; each
+    /// searchRevision bump re-renders every observer, so results are coalesced.
+    static let searchNotificationInterval: TimeInterval = 0.3
     private var pendingIndirectTokens: [UInt32: String] = [:] // token → username
     private var browseSessions: [String: BrowseSession] = [:]
     private var folderContentsHandlers: [UInt32: ([String: [RemoteFileInfo]]) -> Void] = [:]
@@ -250,6 +255,23 @@ public final class SoulseekClient: ObservableObject {
         }
     }
 
+    private func notifySearchResults() {
+        let due = lastSearchNotification.addingTimeInterval(Self.searchNotificationInterval)
+        if Date() >= due {
+            lastSearchNotification = Date()
+            searchRevision += 1
+        } else if searchNotificationTimer == nil {
+            let timer = Timer(fire: due, interval: 0, repeats: false) { [weak self] _ in
+                guard let self else { return }
+                self.searchNotificationTimer = nil
+                self.lastSearchNotification = Date()
+                self.searchRevision += 1
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            searchNotificationTimer = timer
+        }
+    }
+
     public func removeSearchSession(token: UInt32) {
         search.removeSession(token: token)
         searchRevision += 1
@@ -343,7 +365,7 @@ public final class SoulseekClient: ObservableObject {
         }
 
         // Search
-        search.onResultsChanged = { [weak self] _ in self?.searchRevision += 1 }
+        search.onResultsChanged = { [weak self] _ in self?.notifySearchResults() }
         search.onWishlistSearch { [weak self] token, item in
             guard let self, self.isLoggedIn else { return }
             self.send(ServerOut.wishlistSearch(token: token, query: item))
@@ -1113,20 +1135,30 @@ public final class SoulseekClient: ObservableObject {
         users[username] = nil
     }
 
-    public func startSearch(_ text: String) {
-        guard let session = search.startSearch(text), isLoggedIn else { return }
+    /// Returns false when nothing was sent (logged out or no searchable
+    /// words), so no orphan session is created that can never get results.
+    @discardableResult
+    public func startSearch(_ text: String) -> Bool {
+        guard isLoggedIn, let session = search.startSearch(text) else { return false }
         send(ServerOut.fileSearch(token: session.token, query: session.query.rawText))
         searchRevision += 1
+        return true
     }
 
-    public func searchUser(_ username: String, query: String) {
-        guard let session = search.startSearch(query), isLoggedIn else { return }
+    @discardableResult
+    public func searchUser(_ username: String, query: String) -> Bool {
+        guard isLoggedIn, let session = search.startSearch(query) else { return false }
         send(ServerOut.userSearch(username: username, token: session.token, query: session.query.rawText))
+        searchRevision += 1
+        return true
     }
 
-    public func searchRoom(_ room: String, query: String) {
-        guard let session = search.startSearch(query), isLoggedIn else { return }
+    @discardableResult
+    public func searchRoom(_ room: String, query: String) -> Bool {
+        guard isLoggedIn, let session = search.startSearch(query) else { return false }
         send(ServerOut.roomSearch(room: room, token: session.token, query: session.query.rawText))
+        searchRevision += 1
+        return true
     }
 
     public func download(file: RemoteFileInfo, from username: String) {

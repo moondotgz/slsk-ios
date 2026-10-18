@@ -156,4 +156,86 @@ final class PeerConnectionRegressionTests: XCTestCase {
         XCTAssertEqual(invitations.first?.2, 123)
         manager.closeAll()
     }
+    private final class RecordingPeerDelegate: PeerConnectionManagerDelegate {
+        var peerCodes: [(String, UInt32)] = []
+        var failed: [String] = []
+        func peerManager(_ manager: PeerConnectionManager, didReceivePeerMessageCode code: UInt32,
+                         body: MessageBuffer, from username: String) { peerCodes.append((username, code)) }
+        func peerManager(_ manager: PeerConnectionManager, didReceiveDistribCode code: UInt8,
+                         body: MessageBuffer, from username: String, connectionID: UInt64) {}
+        func peerManager(_ manager: PeerConnectionManager, didOpenDownloadConnection id: UInt64,
+                         username: String, token: UInt32) {}
+        func peerManager(_ manager: PeerConnectionManager, didOpenUploadConnection id: UInt64,
+                         username: String, token: UInt32) {}
+        func peerManager(_ manager: PeerConnectionManager, didReceiveFileData id: UInt64, data: Data) {}
+        func peerManager(_ manager: PeerConnectionManager, didReceiveUploadOffset id: UInt64, offset: UInt64) {}
+        func peerManager(_ manager: PeerConnectionManager, didCloseFileConnection id: UInt64, error: (any Error)?) {}
+        func peerManager(_ manager: PeerConnectionManager, didFailPeerConnection username: String) { failed.append(username) }
+        func peerManager(_ manager: PeerConnectionManager, distributedConnectionClosed username: String) {}
+        func peerManager(_ manager: PeerConnectionManager, didAcceptChildConnection id: UInt64, username: String) {}
+    }
+
+    private func searchResultFrame() -> Data {
+        Frame.peer(code: PeerCode.fileSearchResponse, payload: [1, 2, 3])
+    }
+
+    func testSearchResultOnlyConnectionsCloseSoManyRespondersAreAccepted() {
+        let factory = MockTransportFactory()
+        let manager = PeerConnectionManager(factory: factory)
+        let delegate = RecordingPeerDelegate()
+        manager.delegate = delegate
+        manager.localUsername = "tester"
+        defer { manager.closeAll() }
+        for index in 0..<200 {
+            let incoming = factory.listener.accept()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.002))
+            incoming.inject(PeerInitOut.peerInit(username: "responder\(index)", type: ConnectionType.peer)
+                            + searchResultFrame())
+            RunLoop.main.run(until: Date().addingTimeInterval(0.002))
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertEqual(delegate.peerCodes.count, 200)
+        XCTAssertEqual(manager.activeConnectionCount, 0)
+        XCTAssertTrue(delegate.failed.isEmpty)
+    }
+
+    func testCoalescedSearchResultsAreAllDeliveredBeforeClosing() {
+        let factory = MockTransportFactory()
+        let manager = PeerConnectionManager(factory: factory)
+        let delegate = RecordingPeerDelegate()
+        manager.delegate = delegate
+        manager.localUsername = "tester"
+        defer { manager.closeAll() }
+        let incoming = factory.listener.accept()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        let packet = PeerInitOut.peerInit(username: "responder", type: ConnectionType.peer)
+            + searchResultFrame() + searchResultFrame()
+        let split = packet.count - 3
+        incoming.inject(packet.prefix(split))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        XCTAssertEqual(delegate.peerCodes.count, 1)
+        XCTAssertEqual(manager.activeConnectionCount, 1, "a partial frame keeps the socket open")
+        incoming.inject(packet.suffix(from: split))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        XCTAssertEqual(delegate.peerCodes.count, 2)
+        XCTAssertEqual(manager.activeConnectionCount, 0)
+    }
+
+    func testConnectionAwaitingOurRequestStaysOpenAfterSearchResult() {
+        let factory = MockTransportFactory()
+        let manager = PeerConnectionManager(factory: factory)
+        let delegate = RecordingPeerDelegate()
+        manager.delegate = delegate
+        manager.localUsername = "tester"
+        defer { manager.closeAll() }
+        manager.sendToPeer("uploader", PeerOut.queueUpload("song"))
+        manager.setPeerAddress("uploader", host: "127.0.0.1", port: 5000)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        let stream = factory.peerStreams[0]
+        stream.inject(searchResultFrame())
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        XCTAssertEqual(delegate.peerCodes.count, 1)
+        XCTAssertEqual(manager.activeConnectionCount, 1)
+        XCTAssertTrue(delegate.failed.isEmpty)
+    }
 }

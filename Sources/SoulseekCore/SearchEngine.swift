@@ -1,11 +1,35 @@
 import Foundation
 
-/// One initiated search: its query, token, and incoming hits grouped per user.
+/// Results from one user in one folder, in arrival order.
+public final class SearchResultGroup: Identifiable {
+    public let username: String
+    public let folder: String
+    public fileprivate(set) var hits: [SearchHit] = []
+
+    public var id: String { username + "|" + folder }
+    public var hasFreeSlot: Bool { hits.contains { $0.freeUploadSlot } }
+
+    init(username: String, folder: String) {
+        self.username = username
+        self.folder = folder
+    }
+}
+
+/// One initiated search: its query, token, and incoming hits grouped per
+/// user and folder.
 public final class SearchSession: Identifiable {
+    /// Bounds memory for very popular queries (Nicotine+ max_displayed_results
+    /// defaults to 2500).
+    public static let maximumStoredResults = 5000
+
     public let token: UInt32
     public let query: SearchQuery
     public let createdAt: Date
     public private(set) var hits: [SearchHit] = []
+    /// Groups in arrival order, maintained incrementally so views do not
+    /// regroup every hit on each refresh.
+    public private(set) var groups: [SearchResultGroup] = []
+    private var groupIndex: [String: SearchResultGroup] = [:]
     /// Users we already accepted results from, for de-duplication.
     private var seenPaths = Set<String>()
 
@@ -15,26 +39,32 @@ public final class SearchSession: Identifiable {
         createdAt = Date()
     }
 
-    public func hits(inFolder folder: String) -> [SearchHit] {
-        hits.filter { $0.file.folder == folder }
-    }
-
-    public func folders() -> [String] {
-        Array(Set(hits.map { $0.file.folder })).sorted()
-    }
+    public var isFull: Bool { hits.count >= Self.maximumStoredResults }
 
     func add(hit: SearchHit, filter: SearchFilter) -> Bool {
-        guard token == hit.token else { return false }
+        guard token == hit.token, !isFull else { return false }
         let key = hit.username + "\\" + hit.file.virtualPath
         guard !seenPaths.contains(key) else { return false }
         if !filter.allows(hit) { return false }
         seenPaths.insert(key)
         hits.append(hit)
+        let groupKey = hit.username + "|" + hit.file.folder
+        let group: SearchResultGroup
+        if let existing = groupIndex[groupKey] {
+            group = existing
+        } else {
+            group = SearchResultGroup(username: hit.username, folder: hit.file.folder)
+            groupIndex[groupKey] = group
+            groups.append(group)
+        }
+        group.hits.append(hit)
         return true
     }
 
     func removeResults(from username: String) {
         hits.removeAll { $0.username == username }
+        groups.removeAll { $0.username == username }
+        groupIndex = groupIndex.filter { $0.value.username != username }
     }
 }
 

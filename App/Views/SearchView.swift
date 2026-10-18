@@ -5,6 +5,9 @@ struct SearchView: View {
     @State private var query = ""
     @State private var freeSlotOnly = false
     @State private var minBitrate = ""
+    /// Folder groups shown per search; "Show more" raises it.
+    @State private var visibleGroups: [UInt32: Int] = [:]
+    private static let groupPageSize = 50
 
     var body: some View {
         NavigationStack {
@@ -15,12 +18,18 @@ struct SearchView: View {
                             VStack(alignment: .leading) {
                                 Text(session.query.rawText)
                                     .font(.subheadline.weight(.medium))
-                                Text("\(session.hits.count) results from \(sessionFolderCount(session)) folders")
+                                Text("\(session.hits.count) results from \(session.groups.count) folders")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                if session.isFull {
+                                    Text("Result limit reached")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                             Spacer()
                             Button(role: .destructive) {
+                                visibleGroups[session.token] = nil
                                 client.removeSearchSession(token: session.token)
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
@@ -28,15 +37,19 @@ struct SearchView: View {
                             }
                             .buttonStyle(.borderless)
                         }
-                        let folders = session.folders().prefix(20)
-                        ForEach(Array(folders), id: \.self) { folder in
-                            SearchFolderSection(username: nil, folder: folder,
-                                                hits: session.hits(inFolder: folder))
+                        let limit = visibleGroups[session.token] ?? Self.groupPageSize
+                        ForEach(session.groups.prefix(limit)) { group in
+                            SearchFolderSection(username: group.username, folder: group.folder,
+                                                hits: group.hits)
                         }
-                        if session.folders().count > 20 {
-                            Text("More folders not shown…")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        if session.groups.count > limit {
+                            Button {
+                                visibleGroups[session.token] = limit + Self.groupPageSize
+                            } label: {
+                                Label("Show more folders (\(session.groups.count - limit) hidden)",
+                                      systemImage: "chevron.down.circle")
+                                    .font(.subheadline)
+                            }
                         }
                     }
                 }
@@ -90,7 +103,13 @@ struct SearchView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .accessibilityLabel("Search files")
-                .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty || !client.isLoggedIn)
+            }
+            if !client.isLoggedIn {
+                Text("Not connected to the server — searches can't be sent yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             DisclosureGroup("Filters") {
                 Toggle("Free upload slot only", isOn: $freeSlotOnly)
@@ -115,12 +134,9 @@ struct SearchView: View {
     private func submitSearch() {
         let text = query.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return }
-        client.startSearch(text)
-        query = ""
-    }
-
-    private func sessionFolderCount(_ session: SearchSession) -> Int {
-        session.folders().count
+        if client.startSearch(text) {
+            query = ""
+        }
     }
 }
 
@@ -145,7 +161,7 @@ struct SearchFolderSection: View {
                         Text(lastFolderComponent)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.primary)
-                        if let user = hits.first?.username {
+                        if let user = username ?? hits.first?.username {
                             Text(user)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)

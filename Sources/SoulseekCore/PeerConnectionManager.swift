@@ -108,6 +108,10 @@ public final class PeerConnectionManager: PeerGateway {
         var connectTimer: Timer?
         var isDistributedChild = false
         var lastActivity = Date()
+        /// Set once we send a peer message here; such connections may still
+        /// be awaiting a reply and are not closed after a search result.
+        var hasSentMessages = false
+        var receivedSearchResult = false
 
         init(id: UInt64, stream: any ByteStream, kind: String) {
             self.id = id
@@ -203,6 +207,7 @@ public final class PeerConnectionManager: PeerGateway {
 
         if let connection = session.connection, connection.isOpen, connection.kind == ConnectionType.peer {
             connection.lastActivity = Date()
+            connection.hasSentMessages = true
             connection.stream.send(data)
             return
         }
@@ -320,7 +325,9 @@ public final class PeerConnectionManager: PeerGateway {
 
     /// Send distributed branch metadata on one specific connection.
     public func sendDirect(_ connectionID: UInt64, _ data: Data) {
-        connections[connectionID]?.stream.send(data)
+        guard let connection = connections[connectionID] else { return }
+        connection.hasSentMessages = true
+        connection.stream.send(data)
     }
 
     public func sendToDistributedChildren(_ data: Data) {
@@ -524,6 +531,24 @@ public final class PeerConnectionManager: PeerGateway {
         }
     }
 
+    /// Nicotine+ slskproto.py closes a P connection after a FileSearchResponse
+    /// unless it is still in use. Otherwise result-only sockets idle for 60s and
+    /// fill the connection limit, so later responders are refused.
+    private func closeIfOnlyDeliveredSearchResults(_ connection: PeerConnection) {
+        guard connection.receivedSearchResult, connection.kind == ConnectionType.peer,
+              !connection.hasSentMessages, connection.assembler.isEmpty,
+              let username = connection.username else { return }
+        connection.receivedSearchResult = false
+        if let session = sessions[username], session.connection === connection {
+            guard session.pendingMessages.isEmpty else { return }
+            abandon(connection: connection, session: session)
+            session.isConnecting = false
+        } else {
+            connections[connection.id] = nil
+            connection.stream.close()
+        }
+    }
+
     // MARK: - Incoming stream routing (listener-accepted connections)
 
     private func handleAccepted(stream: any ByteStream) {
@@ -546,6 +571,7 @@ public final class PeerConnectionManager: PeerGateway {
         switch connection.kind {
         case ConnectionType.peer:
             guard let code = try? buffer.readUInt32() else { return }
+            if code == PeerCode.fileSearchResponse { connection.receivedSearchResult = true }
             if let username = connection.username {
                 delegate?.peerManager(self, didReceivePeerMessageCode: code, body: buffer, from: username)
             }
@@ -660,6 +686,7 @@ public final class PeerConnectionManager: PeerGateway {
         session.pendingMessages.removeAll()
         for message in pending {
             connection.lastActivity = Date()
+            connection.hasSentMessages = true
             connection.stream.send(message)
         }
     }
@@ -807,6 +834,7 @@ extension PeerConnectionManager: ByteStreamDelegate {
                     return
                 }
             }
+            closeIfOnlyDeliveredSearchResults(connection)
         } catch {
             onDiagnostic?("Socket \(connection.id) framing error: \(error.localizedDescription)")
             byteStream(stream, didCloseWith: error)
